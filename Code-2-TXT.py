@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# combine_text_gui_specialized.py
+# Code-2-TXT.py
 # GUI-only, single-file tool.
 # Modes:
 # - Folder mode: combine all text-like files under a chosen folder (with exclusions).
@@ -677,4 +677,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()
