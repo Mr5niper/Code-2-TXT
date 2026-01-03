@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['combine_text_files.py'],
+    ['Code-2-TXT.py'],
     pathex=[],
     binaries=[],
     datas=[],
@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='combine_text_files',
+    name='Code-2-TXT',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -36,3 +36,4 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
 )
+
