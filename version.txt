@@ -6,8 +6,8 @@
 #
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 1, 0, 0),
-    prodvers=(1, 1, 0, 0),
+    filevers=(1, 2, 0, 0),
+    prodvers=(1, 2, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -23,11 +23,11 @@ VSVersionInfo(
           [
             StringStruct(u'CompanyName', u'Mr5niper'),
             StringStruct(u'FileDescription', u'Combine code/text files into a structured text dump'),
-            StringStruct(u'FileVersion', u'1.1.0.0'),
+            StringStruct(u'FileVersion', u'1.2.0.0'),
             StringStruct(u'InternalName', u'Code-2-TXT'),
             StringStruct(u'OriginalFilename', u'Code-2-TXT.exe'),
             StringStruct(u'ProductName', u'Code-2-TXT'),
-            StringStruct(u'ProductVersion', u'1.1.0.0')
+            StringStruct(u'ProductVersion', u'1.2.0.0')
           ]
         )
       ]
