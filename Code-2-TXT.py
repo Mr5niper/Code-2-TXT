@@ -81,6 +81,12 @@ INCLUDE_LIKE_RES = [
 MAX_REFERENCED_FILES = 2000
 MAX_TRAVERSAL_DEPTH = 10
 
+# Approx. number of visual lines (Notepad++ style, i.e. \n-delimited rows)
+# per output part when splitting. A split is only ever made on a file
+# boundary, so individual parts may run somewhat over this to avoid
+# breaking a file in half.
+DEFAULT_SPLIT_LINES = 5000
+
 
 def sniff_is_text(sample: bytes) -> bool:
     if not sample:
@@ -162,25 +168,305 @@ def should_consider_text_file(path: Path, allow_exts: Set[str]) -> bool:
     return ext in allow_exts
 
 
-def write_file_block(out, fpath: Path, root_dir: Path, data: bytes) -> None:
-    size = len(data)
-    text, encoding = detect_and_decode(data)
-    try:
-        rel = fpath.relative_to(root_dir)
-    except ValueError:
-        rel = fpath
-    out.write("===== FILE START =====\n")
-    out.write(f"Path: {rel}\n")
-    out.write(f"Absolute: {fpath.resolve()}\n")
-    out.write(f"Size: {size} bytes\n")
-    out.write(f"Encoding: {encoding}\n")
-    out.write("----- BEGIN CONTENT -----\n")
+def build_file_block(
+    rel,
+    absolute: Path,
+    size: int,
+    encoding: str,
+    text: str,
+    seg_index: int = 1,
+    seg_total: int = 1,
+    seg_line_start: Optional[int] = None,
+    seg_line_end: Optional[int] = None,
+) -> str:
+    """
+    Build the structured text block for a single file (no I/O).
+
+    When seg_total > 1 the file was too large to fit in one part and has been
+    split across multiple parts ON LINE BOUNDARIES. Each segment carries
+    explicit continuation banners so a reader never mistakes the pieces for
+    separate files or for the file's true beginning/end.
+    """
     if text and not text.endswith("\n"):
         text = text + "\n"
-    out.write(text)
-    out.write("----- END CONTENT -----\n")
-    out.write("===== FILE END =====\n")
-    out.write("\n")
+
+    is_segmented = seg_total > 1
+
+    parts: List[str] = []
+    if is_segmented:
+        parts.append("===== FILE START (CONTINUED) =====\n")
+    else:
+        parts.append("===== FILE START =====\n")
+    parts.append(f"Path: {rel}\n")
+    parts.append(f"Absolute: {absolute}\n")
+    parts.append(f"Size: {size} bytes\n")
+    parts.append(f"Encoding: {encoding}\n")
+
+    if is_segmented:
+        parts.append(
+            f"*** NOTE: This single file was too large for one part and was "
+            f"split across {seg_total} segments on line boundaries. ***\n"
+        )
+        parts.append(f"*** This is SEGMENT {seg_index} of {seg_total} of this ONE file. ***\n")
+        if seg_line_start is not None and seg_line_end is not None:
+            parts.append(
+                f"*** Original-file lines {seg_line_start}-{seg_line_end} "
+                f"(of the file's own numbering). ***\n"
+            )
+        if seg_index > 1:
+            parts.append("*** Content below CONTINUES from the previous segment. ***\n")
+        if seg_index < seg_total:
+            parts.append("*** Content is CONTINUED in the next segment. ***\n")
+        if seg_index == 1:
+            parts.append(f"----- BEGIN CONTENT (segment {seg_index}/{seg_total}) -----\n")
+        else:
+            parts.append(f"----- RESUME CONTENT (segment {seg_index}/{seg_total}) -----\n")
+    else:
+        parts.append("----- BEGIN CONTENT -----\n")
+
+    parts.append(text)
+
+    if is_segmented:
+        if seg_index < seg_total:
+            parts.append(f"----- PAUSE CONTENT (segment {seg_index}/{seg_total}) -----\n")
+            parts.append("===== FILE SEGMENT END (MORE IN NEXT PART) =====\n")
+        else:
+            parts.append(f"----- END CONTENT (segment {seg_index}/{seg_total}) -----\n")
+            parts.append("===== FILE END (ALL SEGMENTS COMPLETE) =====\n")
+    else:
+        parts.append("----- END CONTENT -----\n")
+        parts.append("===== FILE END =====\n")
+    parts.append("\n")
+    return "".join(parts)
+
+
+def segment_oversized_block(
+    label: str,
+    rel,
+    absolute: Path,
+    size: int,
+    encoding: str,
+    text: str,
+    body_budget: int,
+) -> List[Tuple[str, str]]:
+    """
+    Split one file's content into multiple line-bounded segment blocks so each
+    fits within `body_budget` editor lines of CONTENT. The split is always on a
+    newline boundary (never mid-line). Returns a list of (label, block_text).
+
+    body_budget is how many content lines may go in each segment; it should be
+    the per-part line target minus the fixed overhead a block's header/footer
+    adds, so a segment block stays near the requested part size.
+    """
+    if text and not text.endswith("\n"):
+        text = text + "\n"
+    lines = text.splitlines(keepends=True)
+    total_lines = len(lines)
+
+    # Guard: never allow a zero/negative budget; keep at least some content.
+    per = max(50, body_budget)
+
+    # How many segments will we need?
+    seg_total = max(1, (total_lines + per - 1) // per)
+    if seg_total == 1:
+        # Fits after all; emit a normal single block.
+        return [(label, build_file_block(rel, absolute, size, encoding, text))]
+
+    out: List[Tuple[str, str]] = []
+    for i in range(seg_total):
+        start = i * per
+        end = min(total_lines, start + per)
+        chunk = "".join(lines[start:end])
+        seg_index = i + 1
+        seg_label = f"{label} (segment {seg_index}/{seg_total})"
+        block = build_file_block(
+            rel, absolute, size, encoding, chunk,
+            seg_index=seg_index,
+            seg_total=seg_total,
+            seg_line_start=start + 1,
+            seg_line_end=end,
+        )
+        out.append((seg_label, block))
+    return out
+
+
+def count_lines(s: str) -> int:
+    """
+    Count visual lines the way an editor (e.g. Notepad++) numbers them:
+    one row per newline, plus one more if there is trailing content
+    after the last newline.
+    """
+    if not s:
+        return 0
+    n = s.count("\n")
+    if not s.endswith("\n"):
+        n += 1
+    return n
+
+
+def write_output_in_parts(
+    output_file: Path,
+    header: str,
+    items: List[Tuple[str, object, Path, int, str, str]],
+    manifest_lines: List[str],
+    split_lines: Optional[int] = DEFAULT_SPLIT_LINES,
+) -> List[Path]:
+    """
+    Write the combined output, splitting into multiple part files when the
+    total visual line count exceeds `split_lines`.
+
+    Splits normally happen only between one file's end marker and the next
+    file's start marker. If a SINGLE file is itself larger than the threshold,
+    that file is split across parts on line boundaries, and every piece is
+    clearly banner-marked as a continuation segment so a reader cannot mistake
+    the pieces for separate files.
+
+    items: list of (label, rel, absolute, size, encoding, text) in output order.
+    manifest_lines: relative paths (or labels) for the overall manifest.
+
+    Returns the list of files actually written.
+    """
+    output_file = output_file.resolve()
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    header_lines = count_lines(header)
+
+    # Build the un-split blocks first (one per file).
+    whole_blocks: List[Tuple[str, str]] = []
+    for label, rel, absolute, size, encoding, text in items:
+        whole_blocks.append(
+            (label, build_file_block(rel, absolute, size, encoding, text))
+        )
+
+    total_lines = header_lines + sum(count_lines(b) for _, b in whole_blocks)
+
+    # No split requested, or it all fits: single file, original behavior + manifest.
+    if not split_lines or split_lines <= 0 or total_lines <= split_lines:
+        with output_file.open("w", encoding="utf-8", newline="\n") as out:
+            out.write(header)
+            for _, b in whole_blocks:
+                out.write(b)
+            out.write("=== MANIFEST (in order) ===\n")
+            for m in manifest_lines:
+                out.write(m + "\n")
+        return [output_file]
+
+    # Fixed overhead (header + segment banners) a block carries beyond its
+    # content lines. Used to size content segments for oversized files.
+    # A segmented block's non-content lines number roughly a dozen; budget
+    # content generously below the per-part target so a segment stays in range.
+    overhead = 14
+    body_budget = max(50, split_lines - header_lines - overhead)
+
+    # Expand items into final blocks, segmenting any single file whose block
+    # alone exceeds the per-part line budget.
+    blocks: List[Tuple[str, str]] = []
+    any_segmented = False
+    for (label, rel, absolute, size, encoding, text), (lbl, whole) in zip(items, whole_blocks):
+        if count_lines(whole) + header_lines > split_lines:
+            segs = segment_oversized_block(
+                label, rel, absolute, size, encoding, text, body_budget
+            )
+            if len(segs) > 1:
+                any_segmented = True
+            blocks.extend(segs)
+        else:
+            blocks.append((label, whole))
+
+    # --- Group blocks into parts. ---
+    # An oversized file's segments are each their own unit here, so each can
+    # occupy (most of) a part. Other files still split only on boundaries.
+    parts: List[List[Tuple[str, str]]] = []
+    current: List[Tuple[str, str]] = []
+    current_lines = header_lines  # every part repeats the header
+
+    for label, block in blocks:
+        b_lines = count_lines(block)
+        if current and (current_lines + b_lines) > split_lines:
+            parts.append(current)
+            current = []
+            current_lines = header_lines
+        current.append((label, block))
+        current_lines += b_lines
+
+    if current:
+        parts.append(current)
+
+    total_parts = len(parts)
+    stem = output_file.stem
+    suffix = output_file.suffix or ".txt"
+    parent = output_file.parent
+
+    written: List[Path] = []
+    running_no = 0
+
+    for idx, part in enumerate(parts, start=1):
+        part_path = parent / f"{stem}.part{idx:02d}of{total_parts:02d}{suffix}"
+        first_no = running_no + 1
+        labels_in_part = [label for label, _ in part]
+        last_no = running_no + len(part)
+
+        with part_path.open("w", encoding="utf-8", newline="\n") as out:
+            out.write(header)
+            # Mark which part this is, right under the header.
+            out.write(f"=== PART {idx} OF {total_parts} ===\n")
+            out.write(
+                f"This part contains entries {first_no}-{last_no} of the full "
+                f"set (an 'entry' is a whole file, or one segment of a file "
+                f"that was too large to fit in a single part).\n\n"
+            )
+            for label, block in part:
+                out.write(block)
+
+            # Per-part summary footer so an AI reading any single part can
+            # understand the chunking and how the whole set is laid out.
+            out.write("===== PART SUMMARY =====\n")
+            out.write(
+                "This text file is one part of a multi-part code dump that was "
+                "split because it exceeded the line threshold.\n"
+            )
+            out.write(
+                f"Split target: ~{split_lines} editor lines per part. Splits "
+                "normally occur only between a file's '===== FILE END =====' "
+                "and the next file's '===== FILE START ====='.\n"
+            )
+            if any_segmented:
+                out.write(
+                    "NOTE: One or more single files were larger than the "
+                    "threshold and were split across parts ON LINE BOUNDARIES. "
+                    "Those pieces are marked '===== FILE START (CONTINUED) =====' "
+                    "and '===== FILE SEGMENT END (MORE IN NEXT PART) =====', with "
+                    "a 'SEGMENT n of m' banner. Reassemble them in order to get "
+                    "the original file; a label like 'foo.py (segment 2/3)' means "
+                    "the same single file continued.\n"
+                )
+            out.write(f"Part {idx} of {total_parts}.\n")
+            if idx > 1:
+                out.write(
+                    f"Previous part: {stem}.part{idx-1:02d}of{total_parts:02d}{suffix}\n"
+                )
+            if idx < total_parts:
+                out.write(
+                    f"Next part: {stem}.part{idx+1:02d}of{total_parts:02d}{suffix}\n"
+                )
+            out.write(f"\nEntries in THIS part ({first_no}-{last_no}), in order:\n")
+            n = first_no
+            for label in labels_in_part:
+                out.write(f"  {n}. {label}\n")
+                n += 1
+            out.write("\nFull layout across ALL parts, in order:\n")
+            alln = 0
+            for pidx, p in enumerate(parts, start=1):
+                for label, _ in p:
+                    alln += 1
+                    marker = "  <-- in this part" if pidx == idx else ""
+                    out.write(f"  [part {pidx:02d}] {alln}. {label}{marker}\n")
+            out.write("===== END PART SUMMARY =====\n")
+
+        running_no = last_no
+        written.append(part_path)
+
+    return written
 
 
 def combine_folder_mode(
@@ -188,7 +474,8 @@ def combine_folder_mode(
     output_file: Path,
     exclude_dirs: Optional[Set[str]] = None,
     max_bytes: Optional[int] = None,
-) -> int:
+    split_lines: Optional[int] = DEFAULT_SPLIT_LINES,
+) -> Tuple[int, List[Path]]:
     allow_exts = set(DEFAULT_TEXT_EXTS)
     ex_dirs = set(DEFAULT_EXCLUDE_DIRS)
     if exclude_dirs:
@@ -200,83 +487,90 @@ def combine_folder_mode(
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
     included_files: List[str] = []
+    items: List[Tuple[str, object, Path, int, str, str]] = []
 
-    with output_file.open("w", encoding="utf-8", newline="\n") as out:
-        ts = datetime.now().isoformat(timespec="seconds")
-        out.write("=== COMBINED TEXT DUMP (Folder Mode) ===\n")
-        out.write(f"Root: {root_dir}\n")
-        out.write(f"Generated: {ts}\n")
-        out.write(f"Excluded dirs: {', '.join(sorted(ex_dirs)) if ex_dirs else 'None'}\n")
-        out.write(f"Always-excluded extensions: {', '.join(sorted(deny_exts))}\n")
-        out.write(f"Max bytes per file: {max_bytes if max_bytes is not None else 'None'}\n")
-        out.write("\n")
+    ts = datetime.now().isoformat(timespec="seconds")
+    header = (
+        "=== COMBINED TEXT DUMP (Folder Mode) ===\n"
+        f"Root: {root_dir}\n"
+        f"Generated: {ts}\n"
+        f"Excluded dirs: {', '.join(sorted(ex_dirs)) if ex_dirs else 'None'}\n"
+        f"Always-excluded extensions: {', '.join(sorted(deny_exts))}\n"
+        f"Max bytes per file: {max_bytes if max_bytes is not None else 'None'}\n"
+        "\n"
+    )
 
-        for current_root, dirs, files in os.walk(root_dir, topdown=True, followlinks=False):
-            dirs[:] = [d for d in dirs if d not in ex_dirs]
+    for current_root, dirs, files in os.walk(root_dir, topdown=True, followlinks=False):
+        dirs[:] = [d for d in dirs if d not in ex_dirs]
 
-            for fname in files:
-                fpath = Path(current_root) / fname
-                try:
-                    if fpath.resolve() == output_file:
-                        continue
-                except Exception:
-                    pass
-
-                ext = fpath.suffix.lower().lstrip(".")
-                if ext in deny_exts:
+        for fname in files:
+            fpath = Path(current_root) / fname
+            try:
+                if fpath.resolve() == output_file:
                     continue
+            except Exception:
+                pass
 
-                try:
-                    size = fpath.stat().st_size
-                except OSError:
-                    continue
-                if max_bytes is not None and size > max_bytes:
-                    continue
+            ext = fpath.suffix.lower().lstrip(".")
+            if ext in deny_exts:
+                continue
 
-                candidate = should_consider_text_file(fpath, allow_exts=allow_exts)
+            try:
+                size = fpath.stat().st_size
+            except OSError:
+                continue
+            if max_bytes is not None and size > max_bytes:
+                continue
 
-                try:
+            candidate = should_consider_text_file(fpath, allow_exts=allow_exts)
+
+            try:
+                with fpath.open("rb") as fb:
+                    sample = fb.read(8192)
+            except OSError:
+                continue
+
+            if looks_like_firmware_ascii(sample):
+                continue
+
+            if not candidate and not sniff_is_text(sample):
+                continue
+
+            try:
+                if size <= len(sample):
+                    data = sample
+                else:
                     with fpath.open("rb") as fb:
-                        sample = fb.read(8192)
-                except OSError:
-                    continue
+                        data = fb.read()
+            except OSError:
+                continue
 
-                if looks_like_firmware_ascii(sample):
-                    continue
+            if looks_like_firmware_ascii(data[:8192]) or not sniff_is_text(data[:8192]):
+                continue
 
-                if not candidate and not sniff_is_text(sample):
-                    continue
+            try:
+                text, encoding = detect_and_decode(data)
+            except Exception:
+                continue
 
-                try:
-                    if size <= len(sample):
-                        data = sample
-                    else:
-                        with fpath.open("rb") as fb:
-                            data = fb.read()
-                except OSError:
-                    continue
+            try:
+                rel = fpath.relative_to(root_dir)
+            except ValueError:
+                rel = fpath
 
-                if looks_like_firmware_ascii(data[:8192]) or not sniff_is_text(data[:8192]):
-                    continue
+            block_rel = str(rel)
+            items.append((block_rel, rel, fpath.resolve(), len(data), encoding, text))
+            included_files.append(str(rel))
 
-                try:
-                    # decoding happens in write_file_block
-                    pass
-                except Exception:
-                    continue
+    written = write_output_in_parts(
+        output_file=output_file,
+        header=header,
+        items=items,
+        manifest_lines=included_files,
+        split_lines=split_lines,
+    )
 
-                write_file_block(out, fpath, root_dir, data)
-                try:
-                    rel = fpath.relative_to(root_dir)
-                except ValueError:
-                    rel = fpath
-                included_files.append(str(rel))
-
-        out.write("=== MANIFEST (in order) ===\n")
-        for p in included_files:
-            out.write(p + "\n")
-
-    return len(included_files)
+    return len(included_files), written
 
 
 def has_allowed_ext(path_str: str, allow_exts: Set[str], deny_exts: Set[str]) -> bool:
@@ -394,7 +688,8 @@ def combine_from_main_file_mode(
     main_file: Path,
     output_file: Path,
     max_bytes: Optional[int] = None,
-) -> int:
+    split_lines: Optional[int] = DEFAULT_SPLIT_LINES,
+) -> Tuple[int, List[Path]]:
     """
     Start from main_file (included first), parse it to find referenced files,
     resolve them (even if they live outside the main file's folder), and append.
@@ -533,7 +828,7 @@ def combine_from_main_file_mode(
             out.write(f"Root: {start_dir}\n")
             out.write(f"Main file: {main_file}\n")
             out.write("No files included.\n")
-        return 0
+        return 0, [output_file]
 
     # Compute a common project root for nice relative paths
     try:
@@ -542,50 +837,42 @@ def combine_from_main_file_mode(
     except Exception:
         project_root = start_dir
 
-    # Second pass: write out in the collected order
-    with output_file.open("w", encoding="utf-8", newline="\n") as out:
-        ts = datetime.now().isoformat(timespec="seconds")
-        out.write("=== COMBINED TEXT DUMP (Main-File Mode) ===\n")
-        out.write(f"Root: {project_root}\n")
-        out.write(f"Main file: {main_file}\n")
-        out.write(f"Generated: {ts}\n")
-        out.write(f"Always-excluded extensions: {', '.join(sorted(deny_exts))}\n")
-        out.write(f"Max bytes per file: {max_bytes if max_bytes is not None else 'None'}\n")
-        out.write("\n")
+    ts = datetime.now().isoformat(timespec="seconds")
+    header = (
+        "=== COMBINED TEXT DUMP (Main-File Mode) ===\n"
+        f"Root: {project_root}\n"
+        f"Main file: {main_file}\n"
+        f"Generated: {ts}\n"
+        f"Always-excluded extensions: {', '.join(sorted(deny_exts))}\n"
+        f"Max bytes per file: {max_bytes if max_bytes is not None else 'None'}\n"
+        "\n"
+    )
 
-        for real in order:
-            data = contents[real]
-            try:
-                rel = real.relative_to(project_root)
-            except ValueError:
-                rel = real
-            try:
-                text, encoding = detect_and_decode(data)
-            except Exception:
-                continue
+    # Second pass: build item tuples in the collected order
+    items: List[Tuple[str, object, Path, int, str, str]] = []
+    manifest_lines: List[str] = []
+    for real in order:
+        data = contents[real]
+        try:
+            rel = real.relative_to(project_root)
+        except ValueError:
+            rel = real
+        try:
+            text, encoding = detect_and_decode(data)
+        except Exception:
+            continue
+        items.append((str(rel), rel, real, len(data), encoding, text))
+        manifest_lines.append(str(rel))
 
-            out.write("===== FILE START =====\n")
-            out.write(f"Path: {rel}\n")
-            out.write(f"Absolute: {real}\n")
-            out.write(f"Size: {len(data)} bytes\n")
-            out.write(f"Encoding: {encoding}\n")
-            out.write("----- BEGIN CONTENT -----\n")
-            if text and not text.endswith("\n"):
-                text += "\n"
-            out.write(text)
-            out.write("----- END CONTENT -----\n")
-            out.write("===== FILE END =====\n")
-            out.write("\n")
+    written = write_output_in_parts(
+        output_file=output_file,
+        header=header,
+        items=items,
+        manifest_lines=manifest_lines,
+        split_lines=split_lines,
+    )
 
-        out.write("=== MANIFEST (in order) ===\n")
-        for real in order:
-            try:
-                rel = real.relative_to(project_root)
-            except ValueError:
-                rel = real
-            out.write(str(rel) + "\n")
-
-    return len(order)
+    return len(order), written
 def main():
     # Pure GUI to avoid CLI path issues
     try:
@@ -600,11 +887,48 @@ def main():
 
     # Ask user which mode
     from tkinter import messagebox as mb
+    from tkinter import simpledialog as sd
     resp = mb.askyesno(
         "Combine Mode",
         "Yes: Pick a single MAIN script file (append its referenced files).\n"
         "No:  Pick a FOLDER (combine all text-like files under it)."
     )
+
+    def ask_split_lines() -> Optional[int]:
+        """Prompt for split size. Returns lines-per-part, or None for no split."""
+        want_split = mb.askyesno(
+            "Split output?",
+            "Split the output into multiple parts for easier chat-bot ingestion?\n\n"
+            "Yes: split at about a set number of editor lines (file boundaries kept whole).\n"
+            "No:  write a single combined file."
+        )
+        if not want_split:
+            return None
+        val = sd.askinteger(
+            "Lines per part",
+            "Approx. editor lines per part\n"
+            "(splits only between files, so parts may run slightly over):",
+            initialvalue=DEFAULT_SPLIT_LINES,
+            minvalue=100,
+        )
+        # Cancel -> fall back to the default rather than no-split.
+        return val if val else DEFAULT_SPLIT_LINES
+
+    def report(out_paths: List[Path], count: int, what: str) -> None:
+        if len(out_paths) == 1:
+            where = str(out_paths[0])
+        else:
+            where = (
+                f"{len(out_paths)} parts:\n  "
+                + "\n  ".join(p.name for p in out_paths)
+                + f"\n\nin: {out_paths[0].parent}"
+            )
+        mb.showinfo(
+            "Done",
+            f"Wrote {count} files ({what}) to:\n{where}\n\n"
+            f"Excluded by extension: {', '.join(sorted(ALWAYS_EXCLUDE_EXTS))}\n"
+            f"Also skipped Intel HEX / Motorola S-Record content."
+        )
 
     if resp:
         # Main-file mode
@@ -628,18 +952,16 @@ def main():
         if not out_file:
             sys.exit(0)
 
+        split_lines = ask_split_lines()
+
         try:
-            count = combine_from_main_file_mode(
+            count, written = combine_from_main_file_mode(
                 main_file=Path(main_file),
                 output_file=Path(out_file),
                 max_bytes=None,
+                split_lines=split_lines,
             )
-            mb.showinfo(
-                "Done",
-                f"Wrote {count} files (main + referenced) to:\n{out_file}\n\n"
-                f"Excluded by extension: {', '.join(sorted(ALWAYS_EXCLUDE_EXTS))}\n"
-                f"Also skipped Intel HEX / Motorola S-Record content."
-            )
+            report(written, count, "main + referenced")
         except Exception as e:
             mb.showerror("Error", f"Failed: {e}")
             sys.exit(1)
@@ -658,19 +980,17 @@ def main():
         if not out_file:
             sys.exit(0)
 
+        split_lines = ask_split_lines()
+
         try:
-            count = combine_folder_mode(
+            count, written = combine_folder_mode(
                 root_dir=Path(root_dir),
                 output_file=Path(out_file),
                 exclude_dirs=None,
                 max_bytes=None,
+                split_lines=split_lines,
             )
-            mb.showinfo(
-                "Done",
-                f"Wrote {count} files to:\n{out_file}\n\n"
-                f"Excluded by extension: {', '.join(sorted(ALWAYS_EXCLUDE_EXTS))}\n"
-                f"Also skipped Intel HEX / Motorola S-Record content."
-            )
+            report(written, count, "folder mode")
         except Exception as e:
             mb.showerror("Error", f"Failed: {e}")
             sys.exit(1)
