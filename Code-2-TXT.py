@@ -873,258 +873,206 @@ def combine_from_main_file_mode(
     )
 
     return len(order), written
-def main():
-    # Pure GUI to avoid CLI path issues
-    try:
-        import tkinter as tk
-        from tkinter import filedialog, messagebox
-        from tkinter import ttk
-    except Exception:
-        print("tkinter GUI not available. Please install/enable it for your Python.", file=sys.stderr)
-        sys.exit(2)
 
-    from tkinter import messagebox as mb
+def main():
+    import tkinter as tk
+    from tkinter import ttk, filedialog, messagebox
 
     SPLIT_MIN = 100
     SPLIT_MAX = 100000
 
-    # ----- Single options dialog: mode + split toggle + line size -----
-    class OptionsDialog:
-        """
-        One window that lets the user:
-          - choose Main-file mode or Folder mode (radio buttons, each with
-            its explanation shown right there),
-          - optionally enable splitting (checkbox),
-          - set the lines-per-part (spinbox, default 5000, max 100000),
-          - confirm with OK or cancel.
-        Result is stored on self.result as a dict, or None if cancelled.
-        """
-
-        def __init__(self, master):
-            self.result = None
-            self.top = tk.Toplevel(master)
-            self.top.title("Code-2-TXT  -  Options")
-            self.top.resizable(False, False)
-            # Modal
-            self.top.transient(master)
-            self.top.grab_set()
-
-            pad = {"padx": 12, "pady": 6}
-
-            self.mode = tk.StringVar(value="main")
-            self.split_enabled = tk.BooleanVar(value=False)
-            self.split_value = tk.IntVar(value=DEFAULT_SPLIT_LINES)
-
-            tk.Label(
-                self.top,
-                text="What do you want to do?",
-                font=("Segoe UI", 11, "bold"),
-                anchor="w",
-                justify="left",
-            ).grid(row=0, column=0, columnspan=2, sticky="w", **pad)
-
-            # Mode: Main-file
-            tk.Radiobutton(
-                self.top, text="Main-file mode", variable=self.mode, value="main",
-                font=("Segoe UI", 10, "bold"),
-            ).grid(row=1, column=0, columnspan=2, sticky="w", padx=12)
-            tk.Label(
-                self.top,
-                text="Pick a single MAIN script file; the tool appends the files it references.",
-                fg="#444444", anchor="w", justify="left", wraplength=460,
-            ).grid(row=2, column=0, columnspan=2, sticky="w", padx=34)
-
-            # Mode: Folder
-            tk.Radiobutton(
-                self.top, text="Folder mode", variable=self.mode, value="folder",
-                font=("Segoe UI", 10, "bold"),
-            ).grid(row=3, column=0, columnspan=2, sticky="w", padx=12, pady=(8, 0))
-            tk.Label(
-                self.top,
-                text="Pick a FOLDER; the tool combines all text-like files found under it.",
-                fg="#444444", anchor="w", justify="left", wraplength=460,
-            ).grid(row=4, column=0, columnspan=2, sticky="w", padx=34)
-
-            ttk.Separator(self.top, orient="horizontal").grid(
-                row=5, column=0, columnspan=2, sticky="ew", padx=12, pady=10
-            )
-
-            # Split toggle
-            self.split_chk = tk.Checkbutton(
-                self.top,
-                text="Split output into multiple parts",
-                variable=self.split_enabled,
-                font=("Segoe UI", 10, "bold"),
-                command=self._sync_split_state,
-            )
-            self.split_chk.grid(row=6, column=0, columnspan=2, sticky="w", padx=12)
-            tk.Label(
-                self.top,
-                text=(
-                    "When OFF, everything is written to one big file (original behavior).\n"
-                    "When ON, output is split near the line count below. Splits land on "
-                    "file boundaries; a file bigger than the limit is split with clear "
-                    "continuation markers."
-                ),
-                fg="#444444", anchor="w", justify="left", wraplength=460,
-            ).grid(row=7, column=0, columnspan=2, sticky="w", padx=34)
-
-            row8 = tk.Frame(self.top)
-            row8.grid(row=8, column=0, columnspan=2, sticky="w", padx=34, pady=(6, 0))
-            self.split_lbl = tk.Label(row8, text="Lines per part:")
-            self.split_lbl.pack(side="left")
-            self.spin = tk.Spinbox(
-                row8, from_=SPLIT_MIN, to=SPLIT_MAX, increment=500,
-                textvariable=self.split_value, width=10,
-            )
-            self.spin.pack(side="left", padx=(6, 6))
-            tk.Label(row8, text=f"(default {DEFAULT_SPLIT_LINES}, max {SPLIT_MAX})",
-                     fg="#777777").pack(side="left")
-
-            # Buttons
-            btns = tk.Frame(self.top)
-            btns.grid(row=9, column=0, columnspan=2, sticky="e", padx=12, pady=12)
-            tk.Button(btns, text="OK", width=10, default="active",
-                      command=self._on_ok).pack(side="right", padx=(6, 0))
-            tk.Button(btns, text="Cancel", width=10,
-                      command=self._on_cancel).pack(side="right")
-
-            self.top.bind("<Return>", lambda e: self._on_ok())
-            self.top.bind("<Escape>", lambda e: self._on_cancel())
-
-            self._sync_split_state()
-            self._center(master)
-
-        def _center(self, master):
-            self.top.update_idletasks()
-            w = self.top.winfo_width()
-            h = self.top.winfo_height()
-            sw = self.top.winfo_screenwidth()
-            sh = self.top.winfo_screenheight()
-            x = (sw - w) // 2
-            y = (sh - h) // 3
-            self.top.geometry(f"+{x}+{y}")
-
-        def _sync_split_state(self):
-            state = "normal" if self.split_enabled.get() else "disabled"
-            self.spin.config(state=state)
-            self.split_lbl.config(state=state)
-
-        def _on_ok(self):
-            if self.split_enabled.get():
-                try:
-                    val = int(self.split_value.get())
-                except (tk.TclError, ValueError):
-                    mb.showerror("Invalid value",
-                                 "Lines per part must be a whole number.", parent=self.top)
-                    return
-                if val < SPLIT_MIN or val > SPLIT_MAX:
-                    mb.showerror(
-                        "Out of range",
-                        f"Lines per part must be between {SPLIT_MIN} and {SPLIT_MAX}.",
-                        parent=self.top,
-                    )
-                    return
-                split_lines = val
-            else:
-                split_lines = None
-            self.result = {"mode": self.mode.get(), "split_lines": split_lines}
-            self.top.destroy()
-
-        def _on_cancel(self):
-            self.result = None
-            self.top.destroy()
-
     root = tk.Tk()
+    root.title("Code-2-TXT")
+    root.resizable(False, False)
+
+    mode = tk.StringVar(value="main")
+    split_on = tk.BooleanVar(value=False)
+    split_val = tk.StringVar(value=str(DEFAULT_SPLIT_LINES))
+    # Holds the user's confirmed choice; stays None if they close/cancel.
+    choice = {"ok": False}
+
+    pad_x = 14
+
+    tk.Label(root, text="What do you want to do?",
+             font=("Segoe UI", 11, "bold")).grid(
+        row=0, column=0, sticky="w", padx=pad_x, pady=(12, 4))
+
+    tk.Radiobutton(root, text="Main-file mode  (pick one script; its references are appended)",
+                   variable=mode, value="main").grid(
+        row=1, column=0, sticky="w", padx=pad_x)
+    tk.Radiobutton(root, text="Folder mode  (pick a folder; all text based files under it are combined)",
+                   variable=mode, value="folder").grid(
+        row=2, column=0, sticky="w", padx=pad_x)
+
+    ttk.Separator(root, orient="horizontal").grid(
+        row=3, column=0, sticky="ew", padx=pad_x, pady=10)
+
+    spin_holder = tk.Frame(root)
+
+    def sync():
+        state = "normal" if split_on.get() else "disabled"
+        spin.config(state=state)
+        spin_lbl.config(state=state)
+
+    tk.Checkbutton(root, text="Split output into multiple parts",
+                   variable=split_on, command=sync,
+                   font=("Segoe UI", 10, "bold")).grid(
+        row=4, column=0, sticky="w", padx=pad_x)
+    tk.Label(root,
+             text=("Off = one big file (original behavior).\n"
+                   "On = split near the line count below; big files are split\n"
+                   "with clear continuation markers."),
+             fg="#555555", justify="left").grid(
+        row=5, column=0, sticky="w", padx=pad_x + 22, pady=(2, 4))
+
+    spin_holder.grid(row=6, column=0, sticky="w", padx=pad_x + 22, pady=(0, 4))
+    spin_lbl = tk.Label(spin_holder, text="Lines per part:")
+    spin_lbl.pack(side="left")
+    spin = tk.Spinbox(spin_holder, from_=SPLIT_MIN, to=SPLIT_MAX,
+                      increment=500, textvariable=split_val, width=10)
+    spin.pack(side="left", padx=6)
+    tk.Label(spin_holder, text="(default %d, max %d)" % (DEFAULT_SPLIT_LINES, SPLIT_MAX),
+             fg="#888888").pack(side="left")
+
+    def on_ok():
+        if split_on.get():
+            try:
+                v = int(split_val.get())
+            except ValueError:
+                messagebox.showerror("Invalid", "Lines per part must be a whole number.")
+                return
+            if v < SPLIT_MIN or v > SPLIT_MAX:
+                messagebox.showerror(
+                    "Out of range",
+                    "Lines per part must be between %d and %d." % (SPLIT_MIN, SPLIT_MAX))
+                return
+        choice["ok"] = True
+        root.quit()
+
+    def on_cancel():
+        choice["ok"] = False
+        root.quit()
+
+    btns = tk.Frame(root)
+    btns.grid(row=7, column=0, sticky="e", padx=pad_x, pady=12)
+    tk.Button(btns, text="OK", width=10, command=on_ok).pack(side="right", padx=(6, 0))
+    tk.Button(btns, text="Cancel", width=10, command=on_cancel).pack(side="right")
+
+    root.protocol("WM_DELETE_WINDOW", on_cancel)
+    root.bind("<Return>", lambda e: on_ok())
+    root.bind("<Escape>", lambda e: on_cancel())
+
+    sync()
+
+    # Force the window to actually appear, on top, with focus. On some
+    # Windows setups the window can otherwise open off-screen or behind
+    # other windows, which looks exactly like the program "hanging".
+    root.update_idletasks()
+    w = max(root.winfo_reqwidth(), 480)
+    h = max(root.winfo_reqheight(), 300)
+    x = (root.winfo_screenwidth() - w) // 2
+    y = (root.winfo_screenheight() - h) // 3
+    root.geometry("%dx%d+%d+%d" % (w, h, x, y))
+    root.deiconify()
+    root.lift()
+    root.focus_force()
+    root.attributes("-topmost", True)
+    root.update()
+    root.attributes("-topmost", False)
+
+    root.mainloop()
+
+    if not choice["ok"]:
+        try:
+            root.destroy()
+        except Exception:
+            pass
+        return
+
+    chosen_mode = mode.get()
+    split_lines = int(split_val.get()) if split_on.get() else None
+
     root.withdraw()
 
-    dlg = OptionsDialog(root)
-    root.wait_window(dlg.top)
-    opts = dlg.result
-    if not opts:
-        sys.exit(0)
-
-    mode = opts["mode"]
-    split_lines = opts["split_lines"]
-
-    def report(out_paths: List[Path], count: int, what: str) -> None:
+    def report(out_paths, count, what):
         if len(out_paths) == 1:
             where = str(out_paths[0])
         else:
-            where = (
-                f"{len(out_paths)} parts:\n  "
-                + "\n  ".join(p.name for p in out_paths)
-                + f"\n\nin: {out_paths[0].parent}"
-            )
-        mb.showinfo(
+            where = ("%d parts:\n  " % len(out_paths)
+                     + "\n  ".join(p.name for p in out_paths)
+                     + "\n\nin: %s" % out_paths[0].parent)
+        messagebox.showinfo(
             "Done",
-            f"Wrote {count} files ({what}) to:\n{where}\n\n"
-            f"Excluded by extension: {', '.join(sorted(ALWAYS_EXCLUDE_EXTS))}\n"
-            f"Also skipped Intel HEX / Motorola S-Record content."
-        )
+            "Wrote %d files (%s) to:\n%s\n\n"
+            "Excluded by extension: %s\n"
+            "Also skipped Intel HEX / Motorola S-Record content."
+            % (count, what, where, ", ".join(sorted(ALWAYS_EXCLUDE_EXTS))))
 
-    if mode == "main":
-        # Main-file mode
+    if chosen_mode == "main":
         filetypes = [
             ("Script files", "*.atsb *.py *.ps1 *.vb *.vbs *.bas *.cls *.frm *.cmd *.bat *.sh *.psm1 *.psd1"),
             ("All files", "*.*"),
         ]
-        main_file = filedialog.askopenfilename(
-            title="Select main script file",
-            filetypes=filetypes
-        )
+        main_file = filedialog.askopenfilename(title="Select main script file",
+                                               filetypes=filetypes)
         if not main_file:
-            sys.exit(0)
-
+            root.destroy()
+            return
         out_file = filedialog.asksaveasfilename(
-            title="Save combined file as",
-            defaultextension=".txt",
+            title="Save combined file as", defaultextension=".txt",
             initialfile=Path(main_file).with_suffix(".txt").name,
-            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
-        )
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")])
         if not out_file:
-            sys.exit(0)
-
+            root.destroy()
+            return
         try:
             count, written = combine_from_main_file_mode(
-                main_file=Path(main_file),
-                output_file=Path(out_file),
-                max_bytes=None,
-                split_lines=split_lines,
-            )
+                main_file=Path(main_file), output_file=Path(out_file),
+                max_bytes=None, split_lines=split_lines)
             report(written, count, "main + referenced")
         except Exception as e:
-            mb.showerror("Error", f"Failed: {e}")
-            sys.exit(1)
-
+            messagebox.showerror("Error", "Failed: %s" % e)
     else:
-        # Folder mode
         root_dir = filedialog.askdirectory(title="Select root folder to scan")
         if not root_dir:
-            sys.exit(0)
+            root.destroy()
+            return
         out_file = filedialog.asksaveasfilename(
-            title="Save combined file as",
-            defaultextension=".txt",
+            title="Save combined file as", defaultextension=".txt",
             initialfile="combined.txt",
-            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
-        )
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")])
         if not out_file:
-            sys.exit(0)
-
+            root.destroy()
+            return
         try:
             count, written = combine_folder_mode(
-                root_dir=Path(root_dir),
-                output_file=Path(out_file),
-                exclude_dirs=None,
-                max_bytes=None,
-                split_lines=split_lines,
-            )
+                root_dir=Path(root_dir), output_file=Path(out_file),
+                exclude_dirs=None, max_bytes=None, split_lines=split_lines)
             report(written, count, "folder mode")
         except Exception as e:
-            mb.showerror("Error", f"Failed: {e}")
-            sys.exit(1)
+            messagebox.showerror("Error", "Failed: %s" % e)
+
+    try:
+        root.destroy()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
-
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except BaseException as e:
+        import traceback
+        tb = traceback.format_exc()
+        sys.stderr.write(tb)
+        try:
+            import tkinter as _tk
+            from tkinter import messagebox as _mb
+            _r = _tk.Tk(); _r.withdraw()
+            _mb.showerror("Code-2-TXT - Startup Error", "%s: %s\n\n%s" % (type(e).__name__, e, tb))
+            _r.destroy()
+        except Exception:
+            pass
+        sys.exit(1)

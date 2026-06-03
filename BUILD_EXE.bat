@@ -1,200 +1,110 @@
 @echo off
-setlocal EnableDelayedExpansion
+setlocal enabledelayedexpansion
 
-REM ============================================================
-REM  BUILD_EXE.bat  -  Build Code-2-TXT.exe with PyInstaller
-REM
-REM  Strictly requires Python 3.13.12.
-REM  - If 3.13.12 is not found, prints the download link and stops.
-REM  - Installs pinned build deps from requirements.txt.
-REM  - Generates a Windows version resource from version.txt so the
-REM    .exe shows the version in its file Properties > Details.
-REM  Every message / stop point uses PAUSE so the window stays open.
-REM ============================================================
-
-REM Work from the folder this script lives in.
-cd /d "%~dp0"
-
-set "REQUIRED_VERSION=3.13.12"
-set "PY_DOWNLOAD_URL=https://www.python.org/downloads/release/python-31312/"
+:: ==========================================================================
+:: Configuration
+:: ==========================================================================
+set "REQUIRED_PYTHON_VERSION=3.13.12"
+set "PYTHON_DOWNLOAD_URL=https://www.python.org/downloads/release/python-31312/"
 set "APP_NAME=Code-2-TXT"
-set "ENTRY=Code-2-TXT.py"
 
-echo ============================================================
-echo  Building %APP_NAME%.exe
-echo  Required Python: %REQUIRED_VERSION%
-echo ============================================================
-echo.
+:: ==========================================================================
+:: Pre-flight Check: Verify Python Version
+:: ==========================================================================
+echo [INFO] Checking Python version...
 
-REM ------------------------------------------------------------
-REM 1) Locate a Python 3.13.12 interpreter.
-REM    Prefer the py launcher (py -3.13), then fall back to python.
-REM    We verify the EXACT full version string, not just 3.13.
-REM ------------------------------------------------------------
-set "PYEXE="
+:: Get the current Python version output (e.g., "Python 3.13.12")
+for /f "tokens=2 delims= " %%v in ('python --version 2^>^&1') do set "CURRENT_PYTHON_VERSION=%%v"
 
-REM Try the py launcher pinned to 3.13 first.
-where py >nul 2>&1
-if %ERRORLEVEL%==0 (
-    for /f "delims=" %%V in ('py -3.13 -c "import platform;print(platform.python_version())" 2^>nul') do set "FOUND=%%V"
-    if "!FOUND!"=="%REQUIRED_VERSION%" (
-        REM Resolve the actual interpreter path the launcher selected.
-        for /f "delims=" %%P in ('py -3.13 -c "import sys;print(sys.executable)" 2^>nul') do set "PYEXE=%%P"
+echo [INFO] Current Python version: !CURRENT_PYTHON_VERSION!
+echo [INFO] Required Python version: %REQUIRED_PYTHON_VERSION%
+
+if "!CURRENT_PYTHON_VERSION!" neq "%REQUIRED_PYTHON_VERSION%" (
+    echo.
+    echo [ERROR] Incorrect Python version detected.
+    echo.
+    echo This build script requires Python %REQUIRED_PYTHON_VERSION%.
+    echo You are currently using version !CURRENT_PYTHON_VERSION!.
+    echo.
+    echo Please install the correct version from:
+    echo %PYTHON_DOWNLOAD_URL%
+    echo.
+    echo [NOTE] Ensure you add Python to your PATH during installation.
+    goto :error
+)
+
+:: ==========================================================================
+:: Build Script for %APP_NAME%
+:: ==========================================================================
+:: Creates a virtual environment, installs dependencies, and builds a
+:: single-file executable using PyInstaller.
+:: ==========================================================================
+echo [INFO] Python version matches. Starting build process...
+
+:: 1. Create Virtual Environment
+echo [STEP 1/4] Creating virtual environment in '.\venv'...
+
+if not exist .\venv (
+    :: Use 'python' here since we just verified it is the correct version
+    python -m venv .\venv
+    if errorlevel 1 (
+        echo [ERROR] Failed to create virtual environment.
+        goto :error
     )
+) else (
+    echo [INFO] Virtual environment '.\venv' already exists. Skipping creation.
 )
 
-REM Fall back to a bare 'python' on PATH if the launcher didn't match.
-if not defined PYEXE (
-    where python >nul 2>&1
-    if !ERRORLEVEL!==0 (
-        for /f "delims=" %%V in ('python -c "import platform;print(platform.python_version())" 2^>nul') do set "FOUND=%%V"
-        if "!FOUND!"=="%REQUIRED_VERSION%" (
-            for /f "delims=" %%P in ('python -c "import sys;print(sys.executable)" 2^>nul') do set "PYEXE=%%P"
-        )
-    )
+:: 2. Activate Virtual Environment
+echo [STEP 2/4] Activating virtual environment...
+call .\venv\Scripts\activate.bat
+
+if not defined VIRTUAL_ENV (
+    echo [ERROR] Failed to activate the virtual environment. Make sure '.\venv\Scripts\activate.bat' exists.
+    goto :error
 )
 
-if not defined PYEXE (
-    echo.
-    echo [ERROR] Python %REQUIRED_VERSION% was not found on this system.
-    echo.
-    echo This build requires EXACTLY Python %REQUIRED_VERSION%.
-    if defined FOUND (
-        echo The closest version detected was: !FOUND!
-    ) else (
-        echo No suitable Python interpreter was detected.
-    )
-    echo.
-    echo Download Python %REQUIRED_VERSION% here:
-    echo     %PY_DOWNLOAD_URL%
-    echo.
-    echo During install, tick "Add python.exe to PATH".
-    echo After installing, re-run this script.
-    echo.
-    pause
-    exit /b 1
-)
-
-echo [OK] Using Python %REQUIRED_VERSION%
-echo      Interpreter: "%PYEXE%"
-echo.
-
-REM ------------------------------------------------------------
-REM 2) Read the version from version.txt (single source of truth).
-REM ------------------------------------------------------------
-if not exist "version.txt" (
-    echo [ERROR] version.txt not found next to this script.
-    echo Create a version.txt containing a version like: 1.0.0
-    echo.
-    pause
-    exit /b 1
-)
-
-set "APP_VERSION="
-for /f "usebackq tokens=* delims= " %%L in ("version.txt") do (
-    if not defined APP_VERSION set "APP_VERSION=%%L"
-)
-REM Trim stray spaces.
-set "APP_VERSION=%APP_VERSION: =%"
-
-if not defined APP_VERSION (
-    echo [ERROR] version.txt is empty. Put a version like 1.0.0 in it.
-    echo.
-    pause
-    exit /b 1
-)
-
-echo [OK] App version from version.txt: %APP_VERSION%
-echo.
-
-REM ------------------------------------------------------------
-REM 3) Create / use a local virtual environment for a clean build.
-REM ------------------------------------------------------------
-set "VENV_DIR=.build-venv"
-if not exist "%VENV_DIR%\Scripts\python.exe" (
-    echo Creating build virtual environment in "%VENV_DIR%" ...
-    "%PYEXE%" -m venv "%VENV_DIR%"
-    if !ERRORLEVEL! neq 0 (
-        echo [ERROR] Failed to create the virtual environment.
-        echo.
-        pause
-        exit /b 1
-    )
-)
-set "VPY=%VENV_DIR%\Scripts\python.exe"
-
-echo Upgrading pip ...
-"%VPY%" -m pip install --upgrade pip
-if !ERRORLEVEL! neq 0 (
+:: 3. Install Dependencies
+echo [STEP 3/4] Upgrading pip and installing dependencies from requirements.txt...
+python -m pip install --upgrade pip > nul
+if errorlevel 1 (
     echo [ERROR] Failed to upgrade pip.
-    echo.
-    pause
-    exit /b 1
-)
-echo.
-
-REM ------------------------------------------------------------
-REM 4) Install pinned build requirements.
-REM ------------------------------------------------------------
-if not exist "requirements.txt" (
-    echo [ERROR] requirements.txt not found next to this script.
-    echo.
-    pause
-    exit /b 1
+    goto :error
 )
 
-echo Installing build requirements from requirements.txt ...
-"%VPY%" -m pip install -r requirements.txt
-if !ERRORLEVEL! neq 0 (
-    echo [ERROR] Failed to install build requirements.
-    echo.
-    pause
-    exit /b 1
+pip install -r requirements.txt
+if errorlevel 1 (
+    echo [ERROR] Failed to install dependencies from requirements.txt.
+    goto :error
 )
-echo.
 
-REM ------------------------------------------------------------
-REM 5) Generate the Windows version resource from %APP_VERSION%.
-REM    PyInstaller wants a 4-part numeric version (a,b,c,d).
-REM ------------------------------------------------------------
-echo Generating Windows version resource ...
-"%VPY%" make_version_file.py "%APP_VERSION%" "%APP_NAME%" "file_version_info.txt"
-if !ERRORLEVEL! neq 0 (
-    echo [ERROR] Failed to generate the version resource file.
-    echo.
-    pause
-    exit /b 1
-)
-echo.
+:: 4. Build with PyInstaller
+::    -F          one-file exe
+::    --noupx     do not use UPX compression
+::    --clean     clear PyInstaller cache first
+::    --console   keep a console (GUI still shows; console aids debugging)
+::    --version-file version.txt  embeds Windows file-details version
+echo [STEP 4/4] Building executable with PyInstaller...
+pyinstaller -F --noupx --clean --console --name %APP_NAME% --version-file version.txt .\Code-2-TXT.py
 
-REM ------------------------------------------------------------
-REM 6) Build the one-file, windowed executable.
-REM ------------------------------------------------------------
-echo Building %APP_NAME%.exe with PyInstaller ...
-"%VPY%" -m PyInstaller ^
-    --noconfirm ^
-    --clean ^
-    --onefile ^
-    --windowed ^
-    --name "%APP_NAME%" ^
-    --version-file "file_version_info.txt" ^
-    "%ENTRY%"
-if !ERRORLEVEL! neq 0 (
-    echo.
-    echo [ERROR] PyInstaller build failed. See the output above.
-    echo.
-    pause
-    exit /b 1
+if errorlevel 1 (
+    echo [ERROR] PyInstaller build failed.
+    goto :error
 )
 
 echo.
-echo ============================================================
-echo  BUILD COMPLETE
-echo  Output: "%CD%\dist\%APP_NAME%.exe"
-echo  Version: %APP_VERSION%
-echo ============================================================
+echo [SUCCESS] Build completed successfully.
+echo The executable can be found in the '.\dist' directory.
+goto :end
+
+:error
 echo.
-echo Right-click the .exe ^> Properties ^> Details to see the version.
+echo [FAILURE] The build process failed. Please check the errors above.
 echo.
 pause
-exit /b 0
+exit /b 1
+
+:end
+echo.
+pause
+endlocal

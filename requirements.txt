@@ -1,12 +1,8 @@
 # Build-time requirements for Code-2-TXT.
 #
-# The application itself uses ONLY the Python standard library
-# (tkinter, pathlib, re, etc.), so there are no runtime dependencies.
-# These packages are needed only to build the .exe with PyInstaller.
-#
-# Versions are pinned for reproducible builds on Python 3.13.x.
-# PyInstaller and its hooks-contrib package should be kept in sync;
-# if you bump one, bump the other.
-
-pyinstaller==6.20.0
-pyinstaller-hooks-contrib==2026.5
+# The app itself uses only the Python standard library (tkinter, pathlib,
+# re, etc.), so there are no runtime dependencies. These are only needed
+# to build the .exe with PyInstaller. Versions match a known-good build
+# on Python 3.13.12.
+pyinstaller==6.16.0
+pyinstaller-hooks-contrib==2025.9
