@@ -77,6 +77,227 @@ INCLUDE_LIKE_RES = [
     re.compile(r"""(?i)\bsource\s+(['"]?)([^'"\s]+)\1"""),
 ]
 
+# ----------------------------------------------------------------------------
+# .gitignore support (pure standard library; no external deps)
+#
+# Implements the parts of the gitignore spec that matter for excluding files
+# from a code dump: per-line patterns, comments, blank lines, negation (!),
+# directory-only patterns (trailing /), anchoring (leading /), the **
+# wildcards, and single-level * / ? / [..] matching that does NOT cross "/".
+# Patterns from nested .gitignore files apply relative to the directory that
+# contains them, and later patterns override earlier ones (last match wins).
+# ----------------------------------------------------------------------------
+
+
+def _gitignore_translate(pattern: str) -> str:
+    """
+    Translate one gitignore glob pattern body (no leading '!', no trailing '/',
+    anchoring already stripped by the caller) into a regular-expression string
+    that matches a forward-slash-separated relative path.
+
+    '*'  -> matches anything except '/'
+    '?'  -> matches a single char except '/'
+    '**' -> matches across '/' boundaries, per gitignore rules
+    '[..]' character classes are passed through.
+    """
+    i = 0
+    n = len(pattern)
+    res: List[str] = []
+    while i < n:
+        c = pattern[i]
+        if c == "*":
+            # Look for a run of '*'
+            if i + 1 < n and pattern[i + 1] == "*":
+                # consume all consecutive '*'
+                j = i
+                while j < n and pattern[j] == "*":
+                    j += 1
+                before = pattern[i - 1] if i > 0 else ""
+                after = pattern[j] if j < n else ""
+                if (before in ("", "/")) and (after in ("", "/")):
+                    # A path-spanning '**'
+                    if after == "/":
+                        # '**/' -> zero or more leading path segments
+                        res.append("(?:.*/)?")
+                        j += 1  # also consume the '/'
+                    else:
+                        res.append(".*")
+                else:
+                    # '**' not isolated -> treat as a single-segment '*'
+                    res.append("[^/]*")
+                i = j
+                continue
+            else:
+                res.append("[^/]*")
+                i += 1
+                continue
+        elif c == "?":
+            res.append("[^/]")
+            i += 1
+        elif c == "[":
+            # character class: copy until matching ']'
+            j = i + 1
+            if j < n and pattern[j] in ("!", "^"):
+                j += 1
+            if j < n and pattern[j] == "]":
+                j += 1
+            while j < n and pattern[j] != "]":
+                j += 1
+            if j >= n:
+                # no closing bracket: treat '[' literally
+                res.append(re.escape("["))
+                i += 1
+            else:
+                cls = pattern[i:j + 1]
+                # gitignore uses '!' for negation inside classes like regex '^'
+                if cls.startswith("[!"):
+                    cls = "[^" + cls[2:]
+                res.append(cls)
+                i = j + 1
+        else:
+            res.append(re.escape(c))
+            i += 1
+    return "".join(res)
+
+
+class _GitignoreRule:
+    __slots__ = ("regex", "negation", "dir_only", "base")
+
+    def __init__(self, regex: "re.Pattern", negation: bool, dir_only: bool, base: str):
+        self.regex = regex
+        self.negation = negation
+        self.dir_only = dir_only
+        self.base = base  # POSIX relative dir (from root) the rule is anchored under, "" for root
+
+
+def _compile_gitignore_line(line: str, base: str) -> Optional[_GitignoreRule]:
+    """
+    Compile a single raw line from a .gitignore located at relative dir `base`
+    (POSIX, '' for the scan root). Returns None for blanks/comments.
+    """
+    # Strip a trailing CR (Windows) and a single trailing newline already gone.
+    raw = line.rstrip("\n").rstrip("\r")
+    # Leading whitespace is significant only if escaped; gitignore trims
+    # trailing spaces unless escaped with a backslash. Keep it simple/robust:
+    if not raw.strip():
+        return None
+    if raw.lstrip().startswith("#"):
+        return None
+
+    s = raw
+    negation = s.startswith("!")
+    if negation:
+        s = s[1:]
+    # Unescape leading '\#' / '\!'
+    if s.startswith("\\#") or s.startswith("\\!"):
+        s = s[1:]
+
+    # Trailing spaces are ignored unless escaped (we drop unescaped trailing ws)
+    s = re.sub(r"(?<!\\)\s+$", "", s)
+
+    dir_only = s.endswith("/")
+    if dir_only:
+        s = s[:-1]
+
+    if not s:
+        return None
+
+    # A pattern containing a slash anywhere (other than a trailing one) is
+    # anchored to the .gitignore's location. Otherwise it can match at any depth.
+    anchored = "/" in s
+    if s.startswith("/"):
+        s = s[1:]
+        anchored = True
+
+    body = _gitignore_translate(s)
+
+    if anchored:
+        regex_str = r"^" + body + r"(?:/.*)?$"
+    else:
+        # match the pattern as a full path segment-run at any depth
+        regex_str = r"(?:^|.*/)" + body + r"(?:/.*)?$"
+
+    try:
+        regex = re.compile(regex_str)
+    except re.error:
+        return None
+    return _GitignoreRule(regex, negation, dir_only, base)
+
+
+class GitignoreMatcher:
+    """
+    Collects gitignore rules discovered while walking a tree and answers
+    'is this path ignored?' using last-match-wins semantics.
+
+    All paths handed to this matcher must be POSIX-style relative paths from
+    the scan root (e.g. 'src/foo.py', 'build').
+    """
+
+    def __init__(self) -> None:
+        self.rules: List[_GitignoreRule] = []
+
+    def add_file(self, gitignore_path: Path, base_rel: str) -> None:
+        try:
+            with gitignore_path.open("rb") as fb:
+                data = fb.read()
+        except OSError:
+            return
+        try:
+            text = data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            try:
+                text = data.decode("latin-1")
+            except Exception:
+                return
+        for line in text.splitlines():
+            rule = _compile_gitignore_line(line, base_rel)
+            if rule is not None:
+                self.rules.append(rule)
+
+    def add_lines(self, lines: Iterable[str], base_rel: str = "") -> None:
+        for line in lines:
+            rule = _compile_gitignore_line(line, base_rel)
+            if rule is not None:
+                self.rules.append(rule)
+
+    def is_ignored(self, rel_posix: str, is_dir: bool) -> bool:
+        ignored = False
+        for rule in self.rules:
+            # Apply the rule only at/below its own base directory.
+            if rule.base:
+                prefix = rule.base + "/"
+                if rel_posix == rule.base:
+                    sub = ""
+                elif rel_posix.startswith(prefix):
+                    sub = rel_posix[len(prefix):]
+                else:
+                    continue
+            else:
+                sub = rel_posix
+            if not sub:
+                continue
+            if rule.dir_only:
+                # A trailing-slash pattern matches the directory itself AND
+                # anything beneath it. For a non-directory we can only match it
+                # by virtue of an ancestor directory matching, so test each
+                # ancestor segment-run against the (directory) pattern.
+                matched = False
+                if is_dir and rule.regex.match(sub):
+                    matched = True
+                else:
+                    parts = sub.split("/")
+                    for k in range(1, len(parts)):
+                        if rule.regex.match("/".join(parts[:k])):
+                            matched = True
+                            break
+                if matched:
+                    ignored = not rule.negation
+                continue
+            if rule.regex.match(sub):
+                ignored = not rule.negation
+        return ignored
+
+
 # Safety limits for main-file reference traversal
 MAX_REFERENCED_FILES = 2000
 MAX_TRAVERSAL_DEPTH = 10
@@ -475,6 +696,7 @@ def combine_folder_mode(
     exclude_dirs: Optional[Set[str]] = None,
     max_bytes: Optional[int] = None,
     split_lines: Optional[int] = DEFAULT_SPLIT_LINES,
+    use_gitignore: bool = True,
 ) -> Tuple[int, List[Path]]:
     allow_exts = set(DEFAULT_TEXT_EXTS)
     ex_dirs = set(DEFAULT_EXCLUDE_DIRS)
@@ -486,6 +708,23 @@ def combine_folder_mode(
     root_dir = root_dir.resolve()
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
+    # Build the .gitignore matcher. Git always ignores the .git directory and
+    # honors a repo's .gitignore files; we additionally seed it with that so a
+    # tree that has .git in ex_dirs still behaves the same with/without it.
+    gi: Optional[GitignoreMatcher] = None
+    gitignore_active = False
+    if use_gitignore:
+        gi = GitignoreMatcher()
+        gi.add_lines([".git/"], base_rel="")
+
+    def rel_posix(p: Path) -> str:
+        try:
+            r = p.resolve().relative_to(root_dir)
+        except Exception:
+            return ""
+        s = r.as_posix()
+        return "" if s == "." else s
+
     included_files: List[str] = []
     items: List[Tuple[str, object, Path, int, str, str]] = []
 
@@ -496,12 +735,34 @@ def combine_folder_mode(
         f"Generated: {ts}\n"
         f"Excluded dirs: {', '.join(sorted(ex_dirs)) if ex_dirs else 'None'}\n"
         f"Always-excluded extensions: {', '.join(sorted(deny_exts))}\n"
+        f"Honoring .gitignore: {'yes' if use_gitignore else 'no'}\n"
         f"Max bytes per file: {max_bytes if max_bytes is not None else 'None'}\n"
         "\n"
     )
 
     for current_root, dirs, files in os.walk(root_dir, topdown=True, followlinks=False):
-        dirs[:] = [d for d in dirs if d not in ex_dirs]
+        cur_path = Path(current_root)
+
+        # Load any .gitignore in THIS directory before deciding what to prune,
+        # so its rules apply to the current dir's children.
+        if gi is not None:
+            gif = cur_path / ".gitignore"
+            if gif.is_file():
+                base = rel_posix(cur_path)
+                gi.add_file(gif, base)
+                gitignore_active = True
+
+        # Prune excluded dirs (by name) and gitignored dirs (by path).
+        kept_dirs = []
+        for d in dirs:
+            if d in ex_dirs:
+                continue
+            if gi is not None:
+                drel = rel_posix(cur_path / d)
+                if drel and gi.is_ignored(drel, is_dir=True):
+                    continue
+            kept_dirs.append(d)
+        dirs[:] = kept_dirs
 
         for fname in files:
             fpath = Path(current_root) / fname
@@ -510,6 +771,11 @@ def combine_folder_mode(
                     continue
             except Exception:
                 pass
+
+            if gi is not None:
+                frel = rel_posix(fpath)
+                if frel and gi.is_ignored(frel, is_dir=False):
+                    continue
 
             ext = fpath.suffix.lower().lstrip(".")
             if ext in deny_exts:
@@ -932,6 +1198,7 @@ def main():
 
     mode = tk.StringVar(value="main")
     split_on = tk.BooleanVar(value=False)
+    gitignore_on = tk.BooleanVar(value=True)
     split_val = tk.StringVar(value=str(DEFAULT_SPLIT_LINES))
     # Holds the user's confirmed choice; stays None if they close/cancel.
     choice = {"ok": False}
@@ -943,10 +1210,10 @@ def main():
         row=0, column=0, sticky="w", padx=pad_x, pady=(12, 4))
 
     tk.Radiobutton(root, text="Main-file mode  (pick one script; its references are appended)",
-                   variable=mode, value="main").grid(
+                   variable=mode, value="main", command=lambda: sync()).grid(
         row=1, column=0, sticky="w", padx=pad_x)
     tk.Radiobutton(root, text="Folder mode  (pick a folder; all text files under it are combined)",
-                   variable=mode, value="folder").grid(
+                   variable=mode, value="folder", command=lambda: sync()).grid(
         row=2, column=0, sticky="w", padx=pad_x)
 
     ttk.Separator(root, orient="horizontal").grid(
@@ -958,6 +1225,9 @@ def main():
         state = "normal" if split_on.get() else "disabled"
         spin.config(state=state)
         spin_lbl.config(state=state)
+        gi_state = "normal" if mode.get() == "folder" else "disabled"
+        gi_check.config(state=gi_state)
+        gi_note.config(state=gi_state)
 
     tk.Checkbutton(root, text="Split output into multiple parts",
                    variable=split_on, command=sync,
@@ -979,6 +1249,17 @@ def main():
     tk.Label(spin_holder, text="(default %d, max %d)" % (DEFAULT_SPLIT_LINES, SPLIT_MAX),
              fg="#888888").pack(side="left")
 
+    gi_check = tk.Checkbutton(root, text="Respect .gitignore (folder mode)",
+                              variable=gitignore_on,
+                              font=("Segoe UI", 10, "bold"))
+    gi_check.grid(row=7, column=0, sticky="w", padx=pad_x, pady=(8, 0))
+    gi_note = tk.Label(root,
+                       text=("On = skip any file or folder that .gitignore would\n"
+                             "exclude (honors nested .gitignore files, negation,\n"
+                             "and anchoring). Always skips .git/."),
+                       fg="#555555", justify="left")
+    gi_note.grid(row=8, column=0, sticky="w", padx=pad_x + 22, pady=(2, 4))
+
     def on_ok():
         if split_on.get():
             try:
@@ -999,7 +1280,7 @@ def main():
         root.quit()
 
     btns = tk.Frame(root)
-    btns.grid(row=7, column=0, sticky="e", padx=pad_x, pady=12)
+    btns.grid(row=9, column=0, sticky="e", padx=pad_x, pady=12)
     tk.Button(btns, text="OK", width=10, command=on_ok).pack(side="right", padx=(6, 0))
     tk.Button(btns, text="Cancel", width=10, command=on_cancel).pack(side="right")
 
@@ -1036,6 +1317,7 @@ def main():
 
     chosen_mode = mode.get()
     split_lines = int(split_val.get()) if split_on.get() else None
+    want_gitignore = bool(gitignore_on.get())
 
     root.withdraw()
 
@@ -1092,7 +1374,8 @@ def main():
         try:
             count, written = combine_folder_mode(
                 root_dir=Path(root_dir), output_file=Path(out_file),
-                exclude_dirs=None, max_bytes=None, split_lines=split_lines)
+                exclude_dirs=None, max_bytes=None, split_lines=split_lines,
+                use_gitignore=want_gitignore)
             report(written, count, "folder mode")
         except Exception as e:
             messagebox.showerror("Error", "Failed: %s" % e)
