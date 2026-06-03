@@ -1,0 +1,7 @@
+Mr5niper's Code-2-TXT
+
+For documentation, updates, and source code visit:
+https://github.com/Mr5niper/Code-2-TXT
+
+Report issues or request features at:
+https://github.com/Mr5niper/Code-2-TXT/issues

@@ -1,6 +1,5 @@
 # ---- Build output (PyInstaller) ----
 build/
-dist/
 *.exe
 
 # Build virtual environment created by BUILD_EXE.bat
