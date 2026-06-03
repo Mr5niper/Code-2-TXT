@@ -878,41 +878,174 @@ def main():
     try:
         import tkinter as tk
         from tkinter import filedialog, messagebox
+        from tkinter import ttk
     except Exception:
         print("tkinter GUI not available. Please install/enable it for your Python.", file=sys.stderr)
         sys.exit(2)
 
+    from tkinter import messagebox as mb
+
+    SPLIT_MIN = 100
+    SPLIT_MAX = 100000
+
+    # ----- Single options dialog: mode + split toggle + line size -----
+    class OptionsDialog:
+        """
+        One window that lets the user:
+          - choose Main-file mode or Folder mode (radio buttons, each with
+            its explanation shown right there),
+          - optionally enable splitting (checkbox),
+          - set the lines-per-part (spinbox, default 5000, max 100000),
+          - confirm with OK or cancel.
+        Result is stored on self.result as a dict, or None if cancelled.
+        """
+
+        def __init__(self, master):
+            self.result = None
+            self.top = tk.Toplevel(master)
+            self.top.title("Code-2-TXT  -  Options")
+            self.top.resizable(False, False)
+            # Modal
+            self.top.transient(master)
+            self.top.grab_set()
+
+            pad = {"padx": 12, "pady": 6}
+
+            self.mode = tk.StringVar(value="main")
+            self.split_enabled = tk.BooleanVar(value=False)
+            self.split_value = tk.IntVar(value=DEFAULT_SPLIT_LINES)
+
+            tk.Label(
+                self.top,
+                text="What do you want to do?",
+                font=("Segoe UI", 11, "bold"),
+                anchor="w",
+                justify="left",
+            ).grid(row=0, column=0, columnspan=2, sticky="w", **pad)
+
+            # Mode: Main-file
+            tk.Radiobutton(
+                self.top, text="Main-file mode", variable=self.mode, value="main",
+                font=("Segoe UI", 10, "bold"),
+            ).grid(row=1, column=0, columnspan=2, sticky="w", padx=12)
+            tk.Label(
+                self.top,
+                text="Pick a single MAIN script file; the tool appends the files it references.",
+                fg="#444444", anchor="w", justify="left", wraplength=460,
+            ).grid(row=2, column=0, columnspan=2, sticky="w", padx=34)
+
+            # Mode: Folder
+            tk.Radiobutton(
+                self.top, text="Folder mode", variable=self.mode, value="folder",
+                font=("Segoe UI", 10, "bold"),
+            ).grid(row=3, column=0, columnspan=2, sticky="w", padx=12, pady=(8, 0))
+            tk.Label(
+                self.top,
+                text="Pick a FOLDER; the tool combines all text-like files found under it.",
+                fg="#444444", anchor="w", justify="left", wraplength=460,
+            ).grid(row=4, column=0, columnspan=2, sticky="w", padx=34)
+
+            ttk.Separator(self.top, orient="horizontal").grid(
+                row=5, column=0, columnspan=2, sticky="ew", padx=12, pady=10
+            )
+
+            # Split toggle
+            self.split_chk = tk.Checkbutton(
+                self.top,
+                text="Split output into multiple parts",
+                variable=self.split_enabled,
+                font=("Segoe UI", 10, "bold"),
+                command=self._sync_split_state,
+            )
+            self.split_chk.grid(row=6, column=0, columnspan=2, sticky="w", padx=12)
+            tk.Label(
+                self.top,
+                text=(
+                    "When OFF, everything is written to one big file (original behavior).\n"
+                    "When ON, output is split near the line count below. Splits land on "
+                    "file boundaries; a file bigger than the limit is split with clear "
+                    "continuation markers."
+                ),
+                fg="#444444", anchor="w", justify="left", wraplength=460,
+            ).grid(row=7, column=0, columnspan=2, sticky="w", padx=34)
+
+            row8 = tk.Frame(self.top)
+            row8.grid(row=8, column=0, columnspan=2, sticky="w", padx=34, pady=(6, 0))
+            self.split_lbl = tk.Label(row8, text="Lines per part:")
+            self.split_lbl.pack(side="left")
+            self.spin = tk.Spinbox(
+                row8, from_=SPLIT_MIN, to=SPLIT_MAX, increment=500,
+                textvariable=self.split_value, width=10,
+            )
+            self.spin.pack(side="left", padx=(6, 6))
+            tk.Label(row8, text=f"(default {DEFAULT_SPLIT_LINES}, max {SPLIT_MAX})",
+                     fg="#777777").pack(side="left")
+
+            # Buttons
+            btns = tk.Frame(self.top)
+            btns.grid(row=9, column=0, columnspan=2, sticky="e", padx=12, pady=12)
+            tk.Button(btns, text="OK", width=10, default="active",
+                      command=self._on_ok).pack(side="right", padx=(6, 0))
+            tk.Button(btns, text="Cancel", width=10,
+                      command=self._on_cancel).pack(side="right")
+
+            self.top.bind("<Return>", lambda e: self._on_ok())
+            self.top.bind("<Escape>", lambda e: self._on_cancel())
+
+            self._sync_split_state()
+            self._center(master)
+
+        def _center(self, master):
+            self.top.update_idletasks()
+            w = self.top.winfo_width()
+            h = self.top.winfo_height()
+            sw = self.top.winfo_screenwidth()
+            sh = self.top.winfo_screenheight()
+            x = (sw - w) // 2
+            y = (sh - h) // 3
+            self.top.geometry(f"+{x}+{y}")
+
+        def _sync_split_state(self):
+            state = "normal" if self.split_enabled.get() else "disabled"
+            self.spin.config(state=state)
+            self.split_lbl.config(state=state)
+
+        def _on_ok(self):
+            if self.split_enabled.get():
+                try:
+                    val = int(self.split_value.get())
+                except (tk.TclError, ValueError):
+                    mb.showerror("Invalid value",
+                                 "Lines per part must be a whole number.", parent=self.top)
+                    return
+                if val < SPLIT_MIN or val > SPLIT_MAX:
+                    mb.showerror(
+                        "Out of range",
+                        f"Lines per part must be between {SPLIT_MIN} and {SPLIT_MAX}.",
+                        parent=self.top,
+                    )
+                    return
+                split_lines = val
+            else:
+                split_lines = None
+            self.result = {"mode": self.mode.get(), "split_lines": split_lines}
+            self.top.destroy()
+
+        def _on_cancel(self):
+            self.result = None
+            self.top.destroy()
+
     root = tk.Tk()
     root.withdraw()
 
-    # Ask user which mode
-    from tkinter import messagebox as mb
-    from tkinter import simpledialog as sd
-    resp = mb.askyesno(
-        "Combine Mode",
-        "Yes: Pick a single MAIN script file (append its referenced files).\n"
-        "No:  Pick a FOLDER (combine all text-like files under it)."
-    )
+    dlg = OptionsDialog(root)
+    root.wait_window(dlg.top)
+    opts = dlg.result
+    if not opts:
+        sys.exit(0)
 
-    def ask_split_lines() -> Optional[int]:
-        """Prompt for split size. Returns lines-per-part, or None for no split."""
-        want_split = mb.askyesno(
-            "Split output?",
-            "Split the output into multiple parts for easier chat-bot ingestion?\n\n"
-            "Yes: split at about a set number of editor lines (file boundaries kept whole).\n"
-            "No:  write a single combined file."
-        )
-        if not want_split:
-            return None
-        val = sd.askinteger(
-            "Lines per part",
-            "Approx. editor lines per part\n"
-            "(splits only between files, so parts may run slightly over):",
-            initialvalue=DEFAULT_SPLIT_LINES,
-            minvalue=100,
-        )
-        # Cancel -> fall back to the default rather than no-split.
-        return val if val else DEFAULT_SPLIT_LINES
+    mode = opts["mode"]
+    split_lines = opts["split_lines"]
 
     def report(out_paths: List[Path], count: int, what: str) -> None:
         if len(out_paths) == 1:
@@ -930,7 +1063,7 @@ def main():
             f"Also skipped Intel HEX / Motorola S-Record content."
         )
 
-    if resp:
+    if mode == "main":
         # Main-file mode
         filetypes = [
             ("Script files", "*.atsb *.py *.ps1 *.vb *.vbs *.bas *.cls *.frm *.cmd *.bat *.sh *.psm1 *.psd1"),
@@ -951,8 +1084,6 @@ def main():
         )
         if not out_file:
             sys.exit(0)
-
-        split_lines = ask_split_lines()
 
         try:
             count, written = combine_from_main_file_mode(
@@ -979,8 +1110,6 @@ def main():
         )
         if not out_file:
             sys.exit(0)
-
-        split_lines = ask_split_lines()
 
         try:
             count, written = combine_folder_mode(

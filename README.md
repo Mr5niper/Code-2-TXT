@@ -8,6 +8,23 @@ No command-line usage. No arguments. Just run it and use the dialogs.
 
 ---
 
+## Options dialog
+
+On launch, a single options window lets you choose everything at once and
+press **OK**:
+
+- **Mode** (pick one, each explained in the window):
+  - *Main-file mode* — pick one main script; referenced files are appended.
+  - *Folder mode* — pick a folder; all text-like files under it are combined.
+- **Split output into multiple parts** (checkbox):
+  - *Off* (default) — everything goes into one file (original behavior).
+  - *On* — output is split near a chosen line count. Set **Lines per part**
+    with the spinbox (default 5000, max 100000). Splits land on file
+    boundaries; a file larger than the limit is split with clear
+    continuation markers so the pieces aren't mistaken for separate files.
+
+---
+
 ## Features
 
 ### Two Operating Modes
@@ -134,6 +151,44 @@ yaml
 Copy code
 
 At the end of the output, a **manifest** lists all included files in order.
+
+### Split output (when enabled)
+
+When splitting is on and the content exceeds the line target, output is
+written as numbered parts: `name.part01of03.txt`, `name.part02of03.txt`, etc.
+
+- Parts split on file boundaries where possible.
+- A single file larger than the threshold is split across parts on line
+  boundaries. Its pieces use `===== FILE START (CONTINUED) =====`, a
+  `SEGMENT n of m` banner, and `===== FILE SEGMENT END (MORE IN NEXT PART) =====`
+  so they read as one continued file, not separate ones. Reassembling the
+  segments in order reproduces the original file exactly.
+- Each part ends with a summary footer listing the entries in that part and
+  the full layout across all parts, so a tool reading any single part can
+  understand the chunking.
+
+---
+
+## Building the .exe (Windows)
+
+A `BUILD_EXE.bat` is included to produce a standalone `dist\Code-2-TXT.exe`.
+
+Requirements:
+- **Python 3.13.12 specifically.** The script checks the exact version and,
+  if it's missing, prints the download link and stops.
+- Build dependencies are pinned in `requirements.txt` (PyInstaller +
+  hooks-contrib). The app itself has no runtime dependencies beyond the
+  Python standard library.
+
+Steps:
+1. Install Python 3.13.12 (tick "Add python.exe to PATH" during install).
+2. Double-click `BUILD_EXE.bat` (or run it from a terminal).
+3. When it finishes, the executable is at `dist\Code-2-TXT.exe`.
+
+The build reads the version from `version.txt` (a single line like `1.0.0`)
+and embeds it as the Windows file version, visible under
+**Properties > Details** on the built `.exe`. To change the version, edit
+`version.txt` and rebuild.
 
 ---
 
