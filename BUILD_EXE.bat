@@ -82,10 +82,21 @@ if errorlevel 1 (
 ::    -F          one-file exe
 ::    --noupx     do not use UPX compression
 ::    --clean     clear PyInstaller cache first
-::    --console   keep a console (GUI still shows; console aids debugging)
+::    --console   keep a console; the app hides it at runtime, so no
+::                background/taskbar window appears for the user
 ::    --version-file version.txt  embeds Windows file-details version
+::    --icon / --add-data icon.ico  app icon (added only if icon.ico exists)
 echo [STEP 4/4] Building executable with PyInstaller...
-pyinstaller -F --noupx --clean --console --name %APP_NAME% --version-file version.txt .\Code-2-TXT.py
+
+set "ICON_ARGS="
+if exist icon.ico (
+    set "ICON_ARGS=--icon icon.ico --add-data icon.ico;."
+    echo [INFO] icon.ico found - embedding application icon.
+) else (
+    echo [INFO] No icon.ico found - building without a custom icon.
+)
+
+pyinstaller -F --noupx --clean --console --name %APP_NAME% --version-file version.txt !ICON_ARGS! .\Code-2-TXT.py
 
 if errorlevel 1 (
     echo [ERROR] PyInstaller build failed.

@@ -874,6 +874,43 @@ def combine_from_main_file_mode(
 
     return len(order), written
 
+
+def resource_path(name: str) -> str:
+    """
+    Locate a resource bundled with the app (e.g. icon.ico).
+
+    When frozen by PyInstaller, bundled data is extracted to sys._MEIPASS.
+    When running from source, it sits next to this script.
+    """
+    base = getattr(sys, "_MEIPASS", None)
+    if not base:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, name)
+
+
+def _hide_console_window_best_effort():
+    """
+    If this process has a console window (PyInstaller --console build),
+    hide it when launching the GUI so no black window sits in the
+    background or the taskbar. No-op on non-Windows, and only for frozen
+    exe builds so it never hides the user's own terminal during dev.
+    """
+    if not sys.platform.startswith("win"):
+        return
+    if not getattr(sys, "frozen", False):
+        return
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.windll.user32
+        hwnd = kernel32.GetConsoleWindow()
+        if hwnd:
+            SW_HIDE = 0  # fully hide (not just minimize) so it leaves no taskbar entry
+            user32.ShowWindow(hwnd, SW_HIDE)
+    except Exception:
+        pass
+
+
 def main():
     import tkinter as tk
     from tkinter import ttk, filedialog, messagebox
@@ -881,9 +918,17 @@ def main():
     SPLIT_MIN = 100
     SPLIT_MAX = 100000
 
+    _hide_console_window_best_effort()
     root = tk.Tk()
     root.title("Code-2-TXT")
     root.resizable(False, False)
+    try:
+        if sys.platform.startswith("win"):
+            # default= applies the icon to the whole app instance (taskbar too),
+            # overriding the inherited console/shim icon.
+            root.iconbitmap(default=resource_path("icon.ico"))
+    except Exception:
+        pass
 
     mode = tk.StringVar(value="main")
     split_on = tk.BooleanVar(value=False)
@@ -900,7 +945,7 @@ def main():
     tk.Radiobutton(root, text="Main-file mode  (pick one script; its references are appended)",
                    variable=mode, value="main").grid(
         row=1, column=0, sticky="w", padx=pad_x)
-    tk.Radiobutton(root, text="Folder mode  (pick a folder; all text based files under it are combined)",
+    tk.Radiobutton(root, text="Folder mode  (pick a folder; all text files under it are combined)",
                    variable=mode, value="folder").grid(
         row=2, column=0, sticky="w", padx=pad_x)
 
