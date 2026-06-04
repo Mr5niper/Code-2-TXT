@@ -1,142 +1,96 @@
-# Combine Text GUI (Specialized)
+# Code-2-TXT
 
-A **single-file, GUI-only Python tool** that combines text and script files into one structured output file.
+**Turn a whole codebase — or one script and everything it references — into a single, clean text file.**
 
-It is designed for **code review, auditing, archiving, AI ingestion, and documentation** while **safely excluding firmware and binary formats** (including Intel HEX and Motorola S-Record).
+Point it at a folder (or a main script), and Code-2-TXT walks through your project and
+stitches every text and code file into one structured `.txt`, with clear file boundaries
+and a manifest. It's built for **feeding code to an LLM, code review, auditing, archiving,
+and documentation** — and it automatically leaves out the junk: binaries, firmware images,
+build artifacts, and anything your `.gitignore` excludes.
 
-No command-line usage. No arguments. Just run it and use the dialogs.
+It's a **single Python file**, GUI-only. No command line, no arguments, no setup. Run it,
+click through two dialogs, done.
 
----
+> **📷 Screenshot goes here** — paste your options-dialog image in the GitHub editor, which will replace this line with the image link.
 
-## Options dialog
+<!-- Replace the line above with your screenshot, e.g. ![Options dialog](docs/options-dialog.png) -->
 
-On launch, a single options window lets you choose everything at once and
-press **OK**:
-
-- **Mode** (pick one, each explained in the window):
-  - *Main-file mode* — pick one main script; referenced files are appended.
-  - *Folder mode* — pick a folder; all text-like files under it are combined.
-- **Split output into multiple parts** (checkbox):
-  - *Off* (default) — everything goes into one file (original behavior).
-  - *On* — output is split near a chosen line count. Set **Lines per part**
-    with the spinbox (default 5000, max 100000). Splits land on file
-    boundaries; a file larger than the limit is split with clear
-    continuation markers so the pieces aren't mistaken for separate files.
 
 ---
 
-## Features
+## Quick start
 
-### Two Operating Modes
+1. Make sure you have **Python 3.13.12**. This is the exact version the project is built and tested against — releases standardize on it and no other version is supported.
+2. Run it:
+   ```bash
+   python Code-2-TXT.py
+   ```
+   (On Windows you can also build a standalone `.exe` — see [Building the .exe](#building-the-exe-windows).)
+3. The options window opens. Pick a mode, leave the defaults or tweak them, press **OK**.
+4. Choose the folder (or main file), then choose where to save the output.
 
-When launched, the tool asks which mode to use:
-
-### 1. Main-File Mode (Dependency-Aware)
-
-- Select a **single “main” script** (e.g. `.atsb`, `.py`, `.ps1`, `.vb`, `.bat`)
-- The tool:
-  - Includes the main file **first**
-  - Scans its contents for referenced files (`include`, `source`, `Import-Module`, quoted paths, etc.)
-  - Recursively resolves and appends those files
-  - Uses **breadth-first traversal** with safety limits
-- Produces a combined output with a clear file boundary format
-
-Ideal for:
-- Script bundles
-- Automation frameworks
-- Projects with scattered helper files
-- Sending a self-contained context to an LLM
+That's it — you get a single combined `.txt` (or a set of numbered parts if you keep
+splitting on).
 
 ---
 
-### 2. Folder Mode (Bulk Collection)
+## What it does
 
-- Select a **root folder**
-- Recursively combines **all text-like files** under it
-- Automatically skips:
-  - Build artifacts
-  - VCS folders
-  - Virtual environments
-  - Node modules
-- Each included file is written with metadata and clear separators
+Code-2-TXT has two modes, and you pick one in the opening window.
 
-Ideal for:
-- Codebase snapshots
-- Configuration audits
-- Documentation dumps
-- Archival or review purposes
+### Folder mode (default)
 
----
+Point it at a **root folder** and it recursively combines **every text-like file** under
+it into one output. By default it respects your `.gitignore`, skips build/VCS/virtualenv
+folders, and refuses anything that looks binary or like firmware.
 
-## Safety & Exclusions
+Great for:
+- Snapshotting a whole codebase to hand to an AI
+- Config and documentation audits
+- Archiving or reviewing a project
 
-This tool is intentionally conservative.
+### Main-file mode (dependency-aware)
 
-### Always-Excluded File Types
+Point it at a **single script** (`.py`, `.ps1`, `.atsb`, `.vb`, `.bat`, …). It puts that
+file first, then scans it for referenced files (`include`, `source`, `Import-Module`,
+quoted paths, etc.), resolves them, and appends them — following references outward with
+sensible safety limits.
 
-These extensions are **never included**, regardless of content:
-
-```
-hex, bin,
-s19, s28, s37,
-srec, mot,
-xbin,
-ihx, ihex
-```
-
-### Firmware Content Detection
-
-Even if a file has a text extension, it will be excluded if it **looks like firmware**, including:
-
-- Intel HEX records (`:10....`)
-- Motorola S-Record records (`S19....`)
-
-Detection is based on **content patterns**, not just extensions.
-
-### Binary Detection
-
-Files are excluded if:
-- They contain null bytes
-- They fail text heuristics
-- The binary character ratio is too high
-
-This prevents accidental inclusion of compiled objects or encoded blobs.
+Great for:
+- Script bundles and automation frameworks
+- Projects with helper files scattered around
+- Sending a self-contained, runnable context to an LLM
 
 ---
 
-## Supported Text Types
+## Using the options window
 
-### Scripts & Code
+Everything is set in one window before anything runs:
 
-- Python, PowerShell, Batch, Shell
-- VB / VBA
-- C / C++ / C#
-- Java, Go, Rust, Swift
-- JavaScript / TypeScript
-- SQL
+- **Mode** — *Folder mode* (default) or *Main-file mode*. Each is explained right in the
+  window.
+- **Split output into multiple parts** *(on by default)* — when on, the output is split
+  near a target line count. Set **Lines per part** with the spinbox (default 5000, max
+  100000). Splits land on file boundaries; a single file bigger than the limit is split
+  with clear continuation markers so the pieces are never mistaken for separate files.
+  Turn it off to get one big file instead.
+- **Respect .gitignore (folder mode)** *(on by default)* — when on, folder mode skips
+  anything your `.gitignore` would exclude. Turn it off to ignore `.gitignore` entirely.
+  (Disabled in main-file mode.)
 
-### Config & Data
+Keyboard: **Enter = OK**, **Escape = Cancel**.
 
-- JSON, YAML, TOML
-- INI / CFG / CONF
-- CSV / TSV
-- `.env`
-
-### Docs & Build Files
-
-- `.txt`, `.md`, `.rst`, `.log`
-- `Makefile`, `Dockerfile`
-- `README`, `LICENSE`
-- `pyproject.toml`, `package.json`
-
-Special filenames without extensions are handled automatically.
+On Windows, folder mode opens the **classic folder-tree picker** (a plain expandable
+tree where clicking a folder selects it) rather than the modern Explorer-style dialog.
+On other platforms it uses the standard directory dialog.
 
 ---
 
-## Output Format
+## Output format
 
 Each file is wrapped in a structured block:
 
+```
 ===== FILE START =====
 Path: relative/path/to/file
 Absolute: C:\full\path\to\file
@@ -146,26 +100,23 @@ Encoding: utf-8
 (file contents)
 ----- END CONTENT -----
 ===== FILE END =====
+```
 
-yaml
-Copy code
-
-At the end of the output, a **manifest** lists all included files in order.
+At the end, a **manifest** lists every included file in order. In folder mode, the header
+also records whether `.gitignore` was honored.
 
 ### Split output (when enabled)
 
-When splitting is on and the content exceeds the line target, output is
-written as numbered parts: `name.part01of03.txt`, `name.part02of03.txt`, etc.
+When splitting is on and the content exceeds the line target, output is written as
+numbered parts: `name.part01of03.txt`, `name.part02of03.txt`, and so on.
 
 - Parts split on file boundaries where possible.
-- A single file larger than the threshold is split across parts on line
-  boundaries. Its pieces use `===== FILE START (CONTINUED) =====`, a
-  `SEGMENT n of m` banner, and `===== FILE SEGMENT END (MORE IN NEXT PART) =====`
-  so they read as one continued file, not separate ones. Reassembling the
-  segments in order reproduces the original file exactly.
-- Each part ends with a summary footer listing the entries in that part and
-  the full layout across all parts, so a tool reading any single part can
-  understand the chunking.
+- A single file larger than the threshold is split across parts on line boundaries. Its
+  pieces use `===== FILE START (CONTINUED) =====`, a `SEGMENT n of m` banner, and
+  `===== FILE SEGMENT END (MORE IN NEXT PART) =====` so they read as one continued file.
+  Reassembling the segments in order reproduces the original exactly.
+- Each part ends with a summary footer listing its entries and the full layout across all
+  parts, so a tool reading any single part understands the chunking.
 
 ---
 
@@ -173,63 +124,132 @@ written as numbered parts: `name.part01of03.txt`, `name.part02of03.txt`, etc.
 
 A `BUILD_EXE.bat` is included to produce a standalone `dist\Code-2-TXT.exe`.
 
-Requirements:
-- **Python 3.13.12 specifically.** The script checks the exact version and,
-  if it's missing, prints the download link and stops.
-- Build dependencies are pinned in `requirements.txt` (PyInstaller +
-  hooks-contrib). The app itself has no runtime dependencies beyond the
-  Python standard library.
+**Requirements**
+- **Python 3.13.12 specifically.** `BUILD_EXE.bat` checks the running Python against this
+  exact version and refuses to build on anything else, printing the download link and
+  stopping. This is deliberate: every machine that builds a release uses the same
+  interpreter, so builds stay reproducible.
+- Build dependencies are pinned to exact versions in `requirements.txt` (PyInstaller +
+  hooks-contrib) for the same reason. The app itself has **no runtime dependencies**
+  beyond the Python standard library.
 
-Steps:
+**Steps**
 1. Install Python 3.13.12 (tick "Add python.exe to PATH" during install).
 2. Double-click `BUILD_EXE.bat` (or run it from a terminal).
 3. When it finishes, the executable is at `dist\Code-2-TXT.exe`.
 
-The build reads the version from `version.txt` (a single line like `1.0.0`)
-and embeds it as the Windows file version, visible under
-**Properties > Details** on the built `.exe`. To change the version, edit
-`version.txt` and rebuild.
+The build reads the version from `version.txt` (a single line like `1.0.0`) and embeds it
+as the Windows file version, visible under **Properties > Details** on the built `.exe`.
+To change it, edit `version.txt` and rebuild.
 
 ---
 
-## Usage
+## Technical reference
 
-### Requirements
+### .gitignore support (folder mode)
 
-- Python **3.9+**
-- `tkinter` available (default on most Python installations)
+With **Respect .gitignore** on, folder mode matches Git's own decisions about what to
+leave out. It's implemented with the **standard library only** (no extra dependencies) and
+supports:
 
-### Run
+- Comments and blank lines
+- Negation (`!pattern`)
+- Directory-only patterns (trailing `/`) and everything beneath them
+- Anchoring (a leading `/`, or any pattern containing a slash, is anchored to the
+  `.gitignore`'s own location)
+- `**` across path segments, plus single-level `*`, `?`, and `[...]` that don't cross `/`
+- **Nested** `.gitignore` files, applied relative to the directory that contains them
+- Last-match-wins precedence
 
-```bash
-python combine_text_gui_specialized.py
-The GUI will prompt you to select a mode and choose files or folders.
+Ignored directories are pruned before the tool recurses into them, and `.git/` is always
+excluded.
 
-Internal Safety Limits
-To prevent runaway traversal in Main-File Mode:
+### Supported text types
 
-Maximum referenced files: 2000
+**Scripts & code** — Python, PowerShell, Batch, Shell, VB/VBA, C/C++/C#, Java, Go, Rust,
+Swift, JavaScript/TypeScript, SQL.
+**Config & data** — JSON, YAML, TOML, INI/CFG/CONF, CSV/TSV, `.env`.
+**Docs & build** — `.txt`, `.md`, `.rst`, `.log`, `Makefile`, `Dockerfile`, `README`,
+`LICENSE`, `pyproject.toml`, `package.json`.
 
-Maximum traversal depth: 10 levels
+Special filenames without extensions (like `Makefile` and `Dockerfile`) are handled
+automatically.
 
-Wildcard expansion: limited and scoped
+### Safety & exclusions
 
-Bare filename search: capped
+This tool is intentionally conservative.
 
-These limits are intentional and protect against pathological dependency graphs.
+**Always-excluded file types** (never included, regardless of content):
 
-Use Cases
-Preparing code for AI analysis
+```
+hex, bin,
+s19, s28, s37,
+srec, mot,
+xbin,
+ihx, ihex
+```
 
-Creating a single-file project snapshot
+**Built-in excluded directories** (folder mode; skipped by name, independent of `.gitignore`):
 
-Reviewing automation logic
+```
+.git, .hg, .svn, .idea, .vs,
+__pycache__, .mypy_cache, .pytest_cache,
+node_modules, dist, build, out, target,
+bin, obj,
+venv, .venv
+```
 
-Archiving scripts with dependencies intact
+> The built-in directory exclusions always apply, even with `.gitignore` honored — a
+> folder in that list is skipped regardless of what your `.gitignore` says.
 
-Sharing reproducible context without binaries
+**Firmware content detection** — even with a text extension, a file is excluded if it
+looks like firmware: Intel HEX records (`:10....`) or Motorola S-Record records
+(`S19....`). Detection is by **content pattern**, not just extension.
 
-License
-Use, modify, and distribute freely.
+**Binary detection** — files are excluded if they contain null bytes, fail text
+heuristics, or have too high a binary-character ratio. This keeps out compiled objects and
+encoded blobs.
 
-No warranty is implied. This tool prioritizes safety over completeness by design.
+### Internal safety limits (main-file mode)
+
+To prevent runaway traversal of pathological dependency graphs:
+
+- Maximum referenced files: **2000**
+- Maximum traversal depth: **10 levels**
+- Wildcard expansion: limited and scoped
+- Bare filename search: capped
+
+---
+
+## Troubleshooting
+
+- **The window doesn't appear / looks like it's hanging.** It's centered and forced to the
+  front on launch; if it ever opens off-screen behind other windows, alt-tab to it. On
+  frozen `.exe` builds the background console is hidden on purpose.
+- **A file I wanted got skipped.** Check, in order: is its extension in the always-excluded
+  list? Is it inside a built-in excluded directory (e.g. `dist`, `build`, `node_modules`)?
+  Is it matched by `.gitignore` (turn that checkbox off to test)? Does it look binary or
+  like firmware? Any one of these will exclude it.
+- **`.gitignore` isn't being respected.** Make sure you're in **folder mode** — the
+  checkbox only applies there and is disabled in main-file mode.
+- **The folder picker shows the wrong style on Windows.** Folder mode uses the classic
+  tree picker via the OS; if that call ever fails it falls back to the standard dialog.
+- **Build fails complaining about the Python version.** The `.exe` build requires Python
+  **3.13.12** exactly; install that version and retry.
+
+---
+
+## Use cases
+
+- Preparing code for AI analysis
+- Creating a single-file project snapshot
+- Reviewing automation logic
+- Archiving scripts with dependencies intact
+- Sharing reproducible context without binaries
+
+---
+
+## License
+
+Use, modify, and distribute freely. No warranty is implied. This tool prioritizes safety
+over completeness by design.

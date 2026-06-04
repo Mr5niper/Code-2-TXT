@@ -1177,6 +1177,111 @@ def _hide_console_window_best_effort():
         pass
 
 
+def pick_folder_tree(title: str = "Select folder", initialdir: Optional[str] = None):
+    """
+    Show the classic Windows folder-tree picker (SHBrowseForFolder) instead of
+    Tk's modern Explorer-style askdirectory dialog. The classic dialog is a
+    plain expandable folder tree: selecting a node selects that folder, and
+    expanding a node does NOT also "open"/leave it the way the Explorer dialog
+    does.
+
+    Returns the chosen path as a str, or "" if cancelled. On any non-Windows
+    platform, or if the native call fails for any reason, falls back to
+    tkinter.filedialog.askdirectory so behavior degrades gracefully.
+    """
+    if sys.platform.startswith("win"):
+        # Once the native dialog has actually been shown, we must NOT fall
+        # through to the Tk dialog no matter what happens afterward (e.g. a
+        # late COM-uninit hiccup). Otherwise the user picks a folder and then
+        # the old Explorer-style dialog pops up a second time. This flag tracks
+        # "the native dialog ran and produced a result (path or cancel)".
+        native_result = None
+        native_ran = False
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            shell32 = ctypes.windll.shell32
+            ole32 = ctypes.windll.ole32
+
+            # BROWSEINFO flags
+            BIF_RETURNONLYFSDIRS = 0x00000001  # only return real file-system dirs
+            BIF_NEWDIALOGSTYLE = 0x00000040    # resizable, with a "Make New Folder" button
+            BIF_EDITBOX = 0x00000010           # let the user type a path
+            MAX_PATH = 260
+
+            class BROWSEINFO(ctypes.Structure):
+                _fields_ = [
+                    ("hwndOwner", wintypes.HWND),
+                    ("pidlRoot", ctypes.c_void_p),
+                    ("pszDisplayName", wintypes.LPWSTR),
+                    ("lpszTitle", wintypes.LPCWSTR),
+                    ("ulFlags", wintypes.UINT),
+                    ("lpfn", ctypes.c_void_p),
+                    ("lParam", wintypes.LPARAM),
+                    ("iImage", ctypes.c_int),
+                ]
+
+            # Fully prototype the calls so ctypes marshals pointers correctly
+            # on both 32- and 64-bit builds.
+            shell32.SHBrowseForFolderW.argtypes = [ctypes.POINTER(BROWSEINFO)]
+            shell32.SHBrowseForFolderW.restype = ctypes.c_void_p
+            shell32.SHGetPathFromIDListW.argtypes = [ctypes.c_void_p, wintypes.LPWSTR]
+            shell32.SHGetPathFromIDListW.restype = wintypes.BOOL
+            ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+            ole32.CoTaskMemFree.restype = None
+
+            ole32.CoInitialize(None)
+            try:
+                display_buf = ctypes.create_unicode_buffer(MAX_PATH)
+                bi = BROWSEINFO()
+                bi.hwndOwner = None
+                bi.pidlRoot = None
+                bi.pszDisplayName = ctypes.cast(display_buf, wintypes.LPWSTR)
+                bi.lpszTitle = title
+                bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_EDITBOX
+                bi.lpfn = None
+                bi.lParam = 0
+                bi.iImage = 0
+
+                pidl = shell32.SHBrowseForFolderW(ctypes.byref(bi))
+                # The dialog has now been shown and dismissed. From here on we
+                # always honor its outcome and never fall back.
+                native_ran = True
+
+                if not pidl:
+                    native_result = ""  # user cancelled
+                else:
+                    path_buf = ctypes.create_unicode_buffer(MAX_PATH)
+                    ok = shell32.SHGetPathFromIDListW(pidl, path_buf)
+                    try:
+                        ole32.CoTaskMemFree(pidl)
+                    except Exception:
+                        pass
+                    native_result = path_buf.value if ok else ""
+            finally:
+                try:
+                    ole32.CoUninitialize()
+                except Exception:
+                    pass
+        except Exception:
+            # Only fall through if the dialog never actually ran (e.g. the API
+            # wasn't available). If it ran, we keep its result.
+            if not native_ran:
+                native_result = None
+
+        if native_ran:
+            return native_result or ""
+        # else: native path unavailable -> fall through to Tk dialog below.
+
+    # Non-Windows, or native call failed before showing: use the Tk dialog.
+    from tkinter import filedialog
+    kwargs = {"title": title, "mustexist": True}
+    if initialdir:
+        kwargs["initialdir"] = initialdir
+    return filedialog.askdirectory(**kwargs)
+
+
 def main():
     import tkinter as tk
     from tkinter import ttk, filedialog, messagebox
@@ -1196,8 +1301,8 @@ def main():
     except Exception:
         pass
 
-    mode = tk.StringVar(value="main")
-    split_on = tk.BooleanVar(value=False)
+    mode = tk.StringVar(value="folder")
+    split_on = tk.BooleanVar(value=True)
     gitignore_on = tk.BooleanVar(value=True)
     split_val = tk.StringVar(value=str(DEFAULT_SPLIT_LINES))
     # Holds the user's confirmed choice; stays None if they close/cancel.
@@ -1209,11 +1314,11 @@ def main():
              font=("Segoe UI", 11, "bold")).grid(
         row=0, column=0, sticky="w", padx=pad_x, pady=(12, 4))
 
-    tk.Radiobutton(root, text="Main-file mode  (pick one script; its references are appended)",
-                   variable=mode, value="main", command=lambda: sync()).grid(
-        row=1, column=0, sticky="w", padx=pad_x)
     tk.Radiobutton(root, text="Folder mode  (pick a folder; all text files under it are combined)",
                    variable=mode, value="folder", command=lambda: sync()).grid(
+        row=1, column=0, sticky="w", padx=pad_x)
+    tk.Radiobutton(root, text="Main-file mode  (pick one script; its references are appended)",
+                   variable=mode, value="main", command=lambda: sync()).grid(
         row=2, column=0, sticky="w", padx=pad_x)
 
     ttk.Separator(root, orient="horizontal").grid(
@@ -1281,8 +1386,8 @@ def main():
 
     btns = tk.Frame(root)
     btns.grid(row=9, column=0, sticky="e", padx=pad_x, pady=12)
-    tk.Button(btns, text="OK", width=10, command=on_ok).pack(side="right", padx=(6, 0))
-    tk.Button(btns, text="Cancel", width=10, command=on_cancel).pack(side="right")
+    tk.Button(btns, text="Cancel", width=10, command=on_cancel).pack(side="right", padx=(6, 0))
+    tk.Button(btns, text="OK", width=10, command=on_ok).pack(side="right")
 
     root.protocol("WM_DELETE_WINDOW", on_cancel)
     root.bind("<Return>", lambda e: on_ok())
@@ -1360,7 +1465,7 @@ def main():
         except Exception as e:
             messagebox.showerror("Error", "Failed: %s" % e)
     else:
-        root_dir = filedialog.askdirectory(title="Select root folder to scan")
+        root_dir = pick_folder_tree(title="Select root folder to scan")
         if not root_dir:
             root.destroy()
             return
